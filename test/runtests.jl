@@ -1,15 +1,15 @@
-# push!(LOAD_PATH, dirname(dirname(Base.@__DIR__)) * "/DMRG/src")
-# push!(LOAD_PATH, dirname(dirname(Base.@__DIR__)) * "/Hamiltonians/src")
-# push!(LOAD_PATH, dirname(dirname(Base.@__DIR__)) * "/TEBD/src")
-# push!(LOAD_PATH, dirname(dirname(Base.@__DIR__)) * "/ImpurityModelBase/src")
+push!(LOAD_PATH, dirname(dirname(Base.@__DIR__)) * "/DMRG/src")
+push!(LOAD_PATH, dirname(dirname(Base.@__DIR__)) * "/InfiniteDMRG/src")
+push!(LOAD_PATH, dirname(dirname(Base.@__DIR__)) * "/Hamiltonians/src")
+push!(LOAD_PATH, dirname(dirname(Base.@__DIR__)) * "/TEBD/src")
 
 using Test, Random
 using DMRG, Hamiltonians, TEBD
 
-# push!(LOAD_PATH, dirname(Base.@__DIR__) * "/src")
-# using FermionicTCMPS
+push!(LOAD_PATH, dirname(Base.@__DIR__) * "/src")
+using FermionicTCMPS
 
-include("../src/includes.jl")
+# include("../src/includes.jl")
 
 Random.seed!(12354)
 
