@@ -1,11 +1,11 @@
 abstract type AbstractFermionicHamiltonian end
 
-Hamiltonians.qterms(x::AbstractFermionicHamiltonian) = x.data
+GeneralHamiltonians.qterms(x::AbstractFermionicHamiltonian) = x.data
 Base.isempty(x::AbstractFermionicHamiltonian) = isempty(x.data)
 Base.length(x::AbstractFermionicHamiltonian) = maximum_site(x)
 
 DMRG.scalartype(x::AbstractFermionicHamiltonian) = DMRG.compute_scalartype(x.data)
-function Hamiltonians.isconstant(x::AbstractFermionicHamiltonian)
+function GeneralHamiltonians.isconstant(x::AbstractFermionicHamiltonian)
 	for item in x.data
 		isconstant(item) || return false
 	end

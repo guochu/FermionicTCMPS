@@ -3,11 +3,11 @@ uuid = "26f6b186-d955-4bb6-9b24-d19c2a16279e"
 authors = ["Guo Chu <guochu604b@gmail.com>"]
 version = "0.0.1"
 
-
 [deps]
 DMRG = "1240110f-4488-488b-9691-4f58b4220f75"
-Hamiltonians = "ce941b29-2bb2-4194-8c5f-a969bff03822"
+GeneralHamiltonians = "bec6ee38-6105-4457-a6c6-43c77fbcbb25"
 ImpurityModelBase = "a5817ebb-6d84-46c1-a17a-d25f868e249e"
+InfiniteDMRG = "c4d23ee2-b445-4f35-9968-b1d50be634b8"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
 QuadGK = "1fd47b50-473d-5c70-9696-f719f8f3bcdc"

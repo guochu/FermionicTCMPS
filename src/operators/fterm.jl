@@ -3,9 +3,9 @@ abstract type AbstractFermionicTerm end
 # abstract type AbstractFermionicTwoBodyTerm <: AbstractFermionicTerm end
 # abstract type AbstractFermionicFourBodyTerm <: AbstractFermionicTerm end
 
-Hamiltonians.positions(x::AbstractFermionicTerm) = x.positions
-Hamiltonians.coeff(x::AbstractFermionicTerm) = x.coeff
-Hamiltonians.isconstant(x::AbstractFermionicTerm) = isconstant(coeff(x))
+GeneralHamiltonians.positions(x::AbstractFermionicTerm) = x.positions
+GeneralHamiltonians.coeff(x::AbstractFermionicTerm) = x.coeff
+GeneralHamiltonians.isconstant(x::AbstractFermionicTerm) = isconstant(coeff(x))
 DMRG.scalartype(x::AbstractFermionicTerm) = scalartype(coeff(x))
 
 """

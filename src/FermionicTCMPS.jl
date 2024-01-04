@@ -38,8 +38,8 @@ using Logging: @warn
 using Base.Threads: @spawn
 using LinearAlgebra: Hermitian, eigen, Diagonal, mul!, rmul!, axpy!, diagm, tr
 using Random, QuadGK, Reexport
-@reexport using DMRG, Hamiltonians, TEBD, ImpurityModelBase
-using Hamiltonians: AbstractCoefficient
+@reexport using DMRG, GeneralHamiltonians, TEBD, ImpurityModelBase
+using GeneralHamiltonians: AbstractCoefficient
 
 
 # auxiliary
