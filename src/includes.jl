@@ -41,7 +41,3 @@ include("tcmps/twobath/thermalstate.jl")
 include("tcmps/twobath/freefermions.jl")
 # green's functions
 include("tcmps/gf/gf.jl")
-
-
-# utilities for real spectrum functions
-include("utilities/utilities.jl")

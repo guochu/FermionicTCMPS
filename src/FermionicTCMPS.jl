@@ -79,8 +79,4 @@ include("tcmps/twobath/freefermions.jl")
 include("tcmps/gf/gf.jl")
 
 
-# utilities for real spectrum functions
-include("utilities/utilities.jl")
-
-
 end

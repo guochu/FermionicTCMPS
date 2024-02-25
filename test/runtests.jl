@@ -15,9 +15,6 @@ Random.seed!(12354)
 
 include("util.jl")
 
-### auxiliary
-include("auxiliary.jl")
-
 ### tcmps
 include("tcmps/configurations.jl")
 # ground state and thermal state quality for single impurity model
