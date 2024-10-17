@@ -51,7 +51,7 @@ function gf_greater_τ(x::FreeSISBD{<:StarChainConfiguration})
 	c[sys_site, sys_site] = 0
 	ham = h - c
 	λs, U = eigen(Hermitian(ham))
-	ns = [thermaloccupation(β, 0., λs[k]) for k in 1:length(λs)]
+	ns = [fermidirac(β, 0., λs[k]) for k in 1:length(λs)]
 	return τ -> _free_gf_imag(U, λs, ns, 1, 1, τ)
 end
 function gf_greater_τ(x::FreeSISBD{<:StarChainConfiguration}, τs::Vector{<:Real})
