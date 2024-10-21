@@ -54,12 +54,24 @@ function FermionicCommutator(h0::AbstractMatrix, h1::AbstractMatrix, f)
 	return TimeDependentFermionicCommutatorBase{typeof(f)}(transpose(h0), transpose(h1), f)
 end
 
+# function free_gf_real(h::AbstractMatrix, ρ₀::AbstractMatrix, i::Int, j::Int)
+# 	ham = convert(Matrix{eltype(h)}, h)
+# 	λs, U = eigen(Hermitian(ham))
+# 	ns = [real(ρ₀[k, k]) for k in 1:size(U, 1)]
+# 	ρ₁ = U' * Diagonal(1 .- ns) * U
+# 	ρ₂ = U' * Diagonal(ns) * U
+# 	return t -> -im*_free_gf_real(U, λs, ρ₁, i, j, t), t -> im*_free_gf_real(U, λs, ρ₂, i, j, t)
+# end
+
 function free_gf_real(h::AbstractMatrix, ρ₀::AbstractMatrix, i::Int, j::Int)
 	ham = convert(Matrix{eltype(h)}, h)
 	λs, U = eigen(Hermitian(ham))
-	ns = [real(ρ₀[k, k]) for k in 1:size(U, 1)]
-	ρ₁ = U' * Diagonal(1 .- ns) * U
-	ρ₂ = U' * Diagonal(ns) * U
+	# ns = [real(ρ₀[k, k]) for k in 1:size(U, 1)]
+	ρ₀′ = U' * ρ₀ * U
+	# ρ₁ = one(ρ₀) - transpose(ρ₀′) 
+	# ρ₂ = transpose(ρ₀′)
+	ρ₁ = one(ρ₀) - ρ₀′
+	ρ₂ = ρ₀′
 	return t -> -im*_free_gf_real(U, λs, ρ₁, i, j, t), t -> im*_free_gf_real(U, λs, ρ₂, i, j, t)
 end
 
