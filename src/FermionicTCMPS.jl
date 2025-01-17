@@ -37,7 +37,7 @@ export gs_gf_greater_t, gs_gf_greater_τ, gs_gf_lesser_t, gs_gf_greater_lesser_t
 using Logging: @warn
 using Base.Threads: @spawn
 using LinearAlgebra: Hermitian, eigen, Diagonal, mul!, rmul!, axpy!, diagm, tr
-using Random, QuadGK, Reexport
+using Random, QuadGK, Reexport, TensorKit
 @reexport using DMRG, GeneralHamiltonians, TEBD, ImpurityModelBase
 using GeneralHamiltonians: AbstractCoefficient
 

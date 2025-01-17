@@ -4,7 +4,7 @@ push!(LOAD_PATH, dirname(dirname(Base.@__DIR__)) * "/GeneralHamiltonians/src")
 push!(LOAD_PATH, dirname(dirname(Base.@__DIR__)) * "/TEBD/src")
 
 using Test, Random
-using DMRG, GeneralHamiltonians, TEBD
+using TensorKit, DMRG, GeneralHamiltonians, TEBD
 
 push!(LOAD_PATH, dirname(Base.@__DIR__) * "/src")
 using FermionicTCMPS
