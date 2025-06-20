@@ -19,7 +19,7 @@ function gf_greater_t(model::AbstractDIM,
 
 	ham, adag, a = _gf_util(model, j, i, symmetry)
 
-	obs = correlation_2op_1t(ham, a, adag, th_state, times, stepper=gf_stepper, reverse=false)
+	obs = TEBD.correlation_2op_1t(ham, a, adag, th_state, times, stepper=gf_stepper, reverse=false)
 	sca = -im 
 	return obs .* sca
 end
@@ -32,7 +32,7 @@ function gf_greater_τ(model::AbstractDIM,
 	
 	ham, adag, a = _gf_util(model, j, i, symmetry)
 
-	obs = correlation_2op_1τ(ham, a, adag, th_state, times, stepper=gf_stepper, reverse=false)
+	obs = TEBD.correlation_2op_1τ(ham, a, adag, th_state, times, stepper=gf_stepper, reverse=false)
 	sca = -1 
 	return obs .* sca
 end
@@ -45,7 +45,7 @@ function gf_lesser_t(model::AbstractDIM,
 
 	ham, adag, a = _gf_util(model, j, i, symmetry)
 
-	obs = correlation_2op_1t(ham, adag, a, th_state, times, stepper=gf_stepper, reverse=true)
+	obs = TEBD.correlation_2op_1t(ham, adag, a, th_state, times, stepper=gf_stepper, reverse=true)
 	sca = im 
 	return obs .* sca
 end
