@@ -1,4 +1,4 @@
-abstract type BathConfiguration{B<:AbstractFermionicBath} end
+abstract type BathConfiguration{B<:AbstractFermionicNormalBath} end
 
 default_env_sites(x::BathConfiguration) = 1:length(x)
 
@@ -7,35 +7,35 @@ default_env_sites(x::BathConfiguration) = 1:length(x)
 # star and star thermofield
 
 """
-	StarConfiguration{B<:AbstractFermionicBath, D<:DiscretizationScheme} <: BathConfiguration{B}
+	StarConfiguration{B<:AbstractFermionicNormalBath, D<:DiscretizationScheme} <: BathConfiguration{B}
 
 Fields:
 * Ws: the discretized on-site frequencies
 * Vs: the discretized hybridization
 """
-struct StarConfiguration{B<:AbstractFermionicBath, D<:DiscretizationScheme} <: BathConfiguration{B}
+struct StarConfiguration{B<:AbstractFermionicNormalBath, D<:DiscretizationScheme} <: BathConfiguration{B}
 	bath::B
 	discretization::D
 	Ws::Vector{Float64}
 	Vs::Vector{Float64}
 end
 
-function StarConfiguration(bath::AbstractFermionicBath, D::DiscretizationScheme; kwargs...)
+function StarConfiguration(bath::AbstractFermionicNormalBath, D::DiscretizationScheme; kwargs...)
 	omegas, couplings = spectrum_couplings(frequencies(D), bath.spectrum; kwargs...)
 	return StarConfiguration(bath, D, omegas, couplings)
 end
-function StarConfiguration(bath::AbstractFermionicBath; dw::Real, kwargs...)
+function StarConfiguration(bath::AbstractFermionicNormalBath; dw::Real, kwargs...)
 	f = bath.spectrum
 	lb, ub = lowerbound(f), upperbound(f)
 	(isinf(lb) || isinf(ub)) && throw(ArgumentError("integrand can not contain Inf for LinearDiscretization"))
 	return StarConfiguration(bath, LinearDiscretization(dw=dw, wmin=lb, wmax=ub); kwargs...)
 end 
-star(bath::AbstractFermionicBath, d::DiscretizationScheme; kwargs...) = StarConfiguration(bath, d; kwargs...)
-star(bath::AbstractFermionicBath; kwargs...) = StarConfiguration(bath; kwargs...)
+star(bath::AbstractFermionicNormalBath, d::DiscretizationScheme; kwargs...) = StarConfiguration(bath, d; kwargs...)
+star(bath::AbstractFermionicNormalBath; kwargs...) = StarConfiguration(bath; kwargs...)
 nfrequencies(x::StarConfiguration) = length(x.Ws)
 Base.length(x::StarConfiguration) = nfrequencies(x)
 
-struct StarThermofieldConfiguration{B<:AbstractFermionicBath, D<:DiscretizationScheme} <: BathConfiguration{B}
+struct StarThermofieldConfiguration{B<:AbstractFermionicNormalBath, D<:DiscretizationScheme} <: BathConfiguration{B}
 	star::StarConfiguration{B, D}
 end
 
@@ -44,7 +44,7 @@ Base.length(x::StarThermofieldConfiguration) = 2*nfrequencies(x.star)
 
 
 # chain and chain thermofield
-struct ChainConfiguration{B<:AbstractFermionicBath, D<:DiscretizationScheme} <: BathConfiguration{B}
+struct ChainConfiguration{B<:AbstractFermionicNormalBath, D<:DiscretizationScheme} <: BathConfiguration{B}
 	star::StarConfiguration{B, D}
 	Nchain::Int
 end
@@ -52,7 +52,7 @@ end
 chainmapping(m::StarConfiguration; Nchain::Int=nfrequencies(m)-1) = ChainConfiguration(m, Nchain)
 Base.length(x::ChainConfiguration) = x.Nchain
 
-struct ChainThermofieldConfiguration{B<:AbstractFermionicBath, D<:DiscretizationScheme} <: BathConfiguration{B}
+struct ChainThermofieldConfiguration{B<:AbstractFermionicNormalBath, D<:DiscretizationScheme} <: BathConfiguration{B}
 	star::StarConfiguration{B, D}
 	Nchain::Int
 end
@@ -63,14 +63,14 @@ chainmapping(m::StarThermofieldConfiguration; Nchain::Int=nfrequencies(m)-1) = c
 Base.length(x::ChainThermofieldConfiguration) = 2*x.Nchain
 
 
-const ThermofieldConfiguration{B, D} = Union{StarThermofieldConfiguration{B, D}, ChainThermofieldConfiguration{B, D}} where {B<:AbstractFermionicBath, D<:DiscretizationScheme}
-const StarChainConfiguration{B, D} = Union{StarConfiguration{B, D}, ChainConfiguration{B, D}} where {B<:AbstractFermionicBath, D<:DiscretizationScheme}
+const ThermofieldConfiguration{B, D} = Union{StarThermofieldConfiguration{B, D}, ChainThermofieldConfiguration{B, D}} where {B<:AbstractFermionicNormalBath, D<:DiscretizationScheme}
+const StarChainConfiguration{B, D} = Union{StarConfiguration{B, D}, ChainConfiguration{B, D}} where {B<:AbstractFermionicNormalBath, D<:DiscretizationScheme}
 const StarVacuumConfiguration{B, D} = StarConfiguration{B, D} where {B<:FermionicVacuum, D}
 const StarBathConfiguration{B, D} = StarConfiguration{B, D} where {B<:FermionicBath, D}
 const ChainVacuumConfiguration{B, D} = ChainConfiguration{B, D} where {B<:FermionicVacuum, D}
 const StarChainVacuumConfiguration{B, D} = StarChainConfiguration{B, D} where {B<:FermionicVacuum, D}
 const StarChainBathConfiguration{B, D} = StarChainConfiguration{B, D} where {B<:FermionicBath, D}
-const TransformedConfiguration{B, D} = Union{ChainConfiguration{B, D}, StarThermofieldConfiguration{B, D}, ChainThermofieldConfiguration{B, D}} where {B<:AbstractFermionicBath, D<:DiscretizationScheme}
+const TransformedConfiguration{B, D} = Union{ChainConfiguration{B, D}, StarThermofieldConfiguration{B, D}, ChainThermofieldConfiguration{B, D}} where {B<:AbstractFermionicNormalBath, D<:DiscretizationScheme}
 
 default_env_a1_sites(x::ThermofieldConfiguration) = 1:2:length(x)
 default_env_a2_sites(x::ThermofieldConfiguration) = 2:2:length(x)
@@ -106,11 +106,11 @@ function couplings(m::ChainConfiguration)
 	m_freqs, _couplings = couplings(m.star)
 	return star_to_chain(m_freqs, _couplings, m.Nchain)
 end
-function couplings(m::StarThermofieldConfiguration{<:AbstractFermionicBath}) 
+function couplings(m::StarThermofieldConfiguration{<:AbstractFermionicNormalBath}) 
 	m_freqs, couplings_1, couplings_2 = _thermofield_couplings(m)
 	return m_freqs, couplings_1, m_freqs, couplings_2
 end 
-function couplings(m::ChainThermofieldConfiguration{<:AbstractFermionicBath})
+function couplings(m::ChainThermofieldConfiguration{<:AbstractFermionicNormalBath})
 	m_freqs, couplings_1, couplings_2  = _thermofield_couplings(m)
 	alpha1s, beta1s = star_to_chain_safe(m_freqs, couplings_1, m.Nchain)
 	alpha2s, beta2s = star_to_chain_safe(m_freqs, couplings_2, m.Nchain)

@@ -33,7 +33,7 @@ end
 separable_state(x::FreeSISBD; kwargs...) = free_separable_state(x; kwargs...)
 
 
-function free_thermal_state_util(h::AbstractMatrix, bath::AbstractFermionicBath)
+function free_thermal_state_util(h::AbstractMatrix, bath::AbstractFermionicNormalBath)
 	@assert ishermitian(h)
 	h = convert(Matrix{eltype(h)}, h)
 	evals, U = eigen(Hermitian(h))
@@ -86,7 +86,7 @@ function gf_greater_lesser_t(x::FreeSISBD{<:StarChainConfiguration}, ts::Vector{
 	return [item[1] for item in tmp], [item[2] for item in tmp]
 end
 
-function free_gf_util(h::AbstractMatrix, bath::AbstractFermionicBath, i::Int, j::Int)
+function free_gf_util(h::AbstractMatrix, bath::AbstractFermionicNormalBath, i::Int, j::Int)
 	@assert ishermitian(h)
 	ham = convert(Matrix{eltype(h)}, h)
 	evals, evecs = eigen(Hermitian(ham))

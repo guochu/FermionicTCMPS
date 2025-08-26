@@ -15,8 +15,8 @@ println("----------------------------------------------")
 	tol = 1.0e-4
 	symmetry = Charge()
 
-	leftbath = fermionicbath(spectrum_func(Dl), β=Inf, μ=leftmu)
-	rightbath = fermionicbath(spectrum_func(Dr), β=Inf, μ=rightmu)
+	leftbath = fermionicvacuum(spectrum_func(Dl), μ=leftmu)
+	rightbath = fermionicvacuum(spectrum_func(Dr), μ=rightmu)
 	leftconfig1 = star(leftbath, dw=leftdw)
 	rightconfig1 = star(rightbath, dw=rightdw)
 

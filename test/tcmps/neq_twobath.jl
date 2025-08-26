@@ -3,7 +3,7 @@ println("|         Two Bath Non-Equilibrium Dynamics        |")
 println("----------------------------------------------------")
 
 f(D, ϵ) = sqrt(1-(ϵ/D)^2) / π
-spectrum_func(D) = SpectrumFunction(ϵ->f(D, ϵ), lb=-D, ub=D)
+spectrum_func(D) = spectrum(ϵ->f(D, ϵ), lb=-D, ub=D)
 
 
 @testset "NEQ dynamics: benchmark ED with thermofield configurations" begin

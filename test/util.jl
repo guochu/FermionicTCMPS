@@ -1,10 +1,10 @@
 
 f(D, ϵ) = sqrt(1-(ϵ/D)^2) / π
-spectrum_func(D) = SpectrumFunction(ϵ->f(D, ϵ), lb=-D, ub=D)
+spectrum_func(D) = spectrum(ϵ->f(D, ϵ), lb=-D, ub=D)
 spectrum_func() = spectrum_func(10)
 
 function star_config(β, μ, dw)
-	bath = fermionicbath(spectrum_func(), β=β, μ=μ)
+	bath = (β==Inf) ? fermionicvacuum(spectrum_func(), μ=μ) : fermionicbath(spectrum_func(), β=β, μ=μ)
 	return star(bath, dw=dw)
 end
 

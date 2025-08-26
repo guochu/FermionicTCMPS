@@ -36,7 +36,7 @@ end
 	β = Inf
 
 	# check ED, noninteracting
-	bath = fermionicbath(spectrum_func(), β=β, μ=μ)
+	bath = fermionicvacuum(spectrum_func(),μ=μ)
 	config1 = star(bath, dw=dw)
 	config2 = chainmapping(config1)
 	times = collect(0:0.1:1)
@@ -53,7 +53,7 @@ end
 
 	# interacting
 	ϵ_d = -1.
-	bath = fermionicbath(spectrum_func(), β=β, μ=μ)
+	bath = fermionicvacuum(spectrum_func(), μ=μ)
 	config1 = star(bath, dw=dw)
 	config2 = chainmapping(config1)
 	times = collect(0:0.1:1.3)
