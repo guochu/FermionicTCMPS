@@ -31,11 +31,11 @@ end
 # spectrum is per band. The double-bath config concatenates the two baths'
 # modes (the influence functional only sees the total hybridization).
 const CONFIGS = [
-    BenchConfig("single_b05", 0.5, [-0.9, -0.3, 0.5], [0.35, 0.45, 0.5], -0.3, 1.7, 1.1),
-    BenchConfig("single_b1", 1.0, [-0.9, -0.3, 0.5], [0.35, 0.45, 0.5], -0.3, 1.7, 1.1),
-    BenchConfig("double_b05", 0.5, [-0.9, -0.3, 0.5], [0.35, 0.45, 0.5], -0.3, 1.7, 1.1),
-    BenchConfig("double_b1", 1.0, [-0.9, -0.3, 0.5], [0.35, 0.45, 0.5], -0.3, 1.7, 1.1),
-    BenchConfig("single_T0", Inf, [0.4], [0.55], 0.2, 1.7, 1.1),
+    BenchConfig("single_b05", 0.5, [-0.9, -0.3, 0.5], [0.35, 0.45, 0.5], -0.3, 1.7, 1.0),
+    BenchConfig("single_b1", 1.0, [-0.9, -0.3, 0.5], [0.35, 0.45, 0.5], -0.3, 1.7, 1.0),
+    BenchConfig("double_b05", 0.5, [-0.9, -0.3, 0.5], [0.35, 0.45, 0.5], -0.3, 1.7, 1.0),
+    BenchConfig("double_b1", 1.0, [-0.9, -0.3, 0.5], [0.35, 0.45, 0.5], -0.3, 1.7, 1.0),
+    BenchConfig("single_T0", Inf, [0.4], [0.55], 0.2, 1.7, 1.0),
 ]
 
 function run_config(cfg::BenchConfig)

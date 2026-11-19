@@ -61,9 +61,16 @@ Exports: `SISBD`, `SIDBD`, `mpo`, `separable_state`, `evolve!`,
   star-frame free-fermion evolution, occupied-spin lesser analytic value,
   impurity occupation vs exact star evolution, conserved-charge and δt²-convergence
   checks.
-* **G4** (`scripts/`): crosscheck against GTEMPO (two processes — the GTEMPO stack
-  pins a different TensorKit major, so they cannot share an environment; see the
-  script headers).
+* **G4** (`test/gtempo_crosscheck.jl` + `scripts/`): crosscheck against GTEMPO.
+  The two stacks pin different TensorKit majors (0.13 vs 0.17) and cannot share an
+  environment, so the GTEMPO-side values are produced by
+  `scripts/gtempo_benchmark.jl` (run inside the GTEMPO project) into a CSV that
+  the test consumes; `scripts/compare_gtempo.jl` prints the full grid comparison.
+  The single-mode zero-temperature config agrees on the full complex greater
+  function to ≤ 5e-3 (thermal impurity weight `(1−⟨n↑⟩)` per band, our spin-summed
+  gt halved). The multi-mode finite-β configs show deviations growing with time
+  from the sweep-TDVP cascade limitation below — compare with that envelope in
+  mind (|Δ| ≈ 1e-3 up to t ≈ 0.3, O(0.1) by t = 1).
 
 ## Known limitations
 

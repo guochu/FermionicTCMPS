@@ -33,11 +33,11 @@ struct BenchConfig
 end
 
 const CONFIGS = [
-    BenchConfig("single_b05", 1, 0.5, [-0.9, -0.3, 0.5], [0.35, 0.45, 0.5], -0.3, 1.7, 1.1),
-    BenchConfig("single_b1", 1, 1.0, [-0.9, -0.3, 0.5], [0.35, 0.45, 0.5], -0.3, 1.7, 1.1),
-    BenchConfig("double_b05", 2, 0.5, [-0.9, -0.3, 0.5], [0.35, 0.45, 0.5], -0.3, 1.7, 1.1),
-    BenchConfig("double_b1", 2, 1.0, [-0.9, -0.3, 0.5], [0.35, 0.45, 0.5], -0.3, 1.7, 1.1),
-    BenchConfig("single_T0", 1, Inf, [0.4], [0.55], -0.3, 1.7, 1.1),
+    BenchConfig("single_b05", 1, 0.5, [-0.9, -0.3, 0.5], [0.35, 0.45, 0.5], -0.3, 1.7, 1.0),
+    BenchConfig("single_b1", 1, 1.0, [-0.9, -0.3, 0.5], [0.35, 0.45, 0.5], -0.3, 1.7, 1.0),
+    BenchConfig("double_b05", 2, 0.5, [-0.9, -0.3, 0.5], [0.35, 0.45, 0.5], -0.3, 1.7, 1.0),
+    BenchConfig("double_b1", 2, 1.0, [-0.9, -0.3, 0.5], [0.35, 0.45, 0.5], -0.3, 1.7, 1.0),
+    BenchConfig("single_T0", 1, Inf, [0.4], [0.55], 0.2, 1.7, 1.0),
 ]
 
 const δt = 0.02
@@ -63,9 +63,19 @@ function run_config(cfg::BenchConfig)
         x = SIDBD(bathl, bathr; U = cfg.U, εd = cfg.εd, Jl = cfg.J, Jr = cfg.J)
     end
     gt, lt = gf_greater_lesser_t(x, TIMES; δt = δt, trunc = TRUNC)
-    # thermal-impurity greater: (1 − n_F(εd)) × empty-sector greater
-    nd_fermi = isinf(cfg.β) ? Float64(cfg.εd < 0.0) : fermidirac(cfg.β, 0.0, cfg.εd)
-    return (1.0 - nd_fermi) .* gt, lt
+    # Thermal-impurity greater, per spin band (GTEMPO's greater is single band):
+    # the impurity thermal state of H_imp = εd(n↑+n↓) + U n↑n↓ has
+    # ⟨n↑⟩ = (e^{−βεd} + e^{−β(2εd+U)})/Z; only the empty-spin sector contributes
+    # to the greater (the occupied-sector greater vanishes), hence
+    # G^>_band = (1 − ⟨n↑⟩) · G^>_empty-sector, and our gt is the spin sum (/2).
+    nd = _thermal_impurity_occupation(cfg.εd, cfg.U, cfg.β)
+    return ((1.0 - nd) .* gt ./ 2.0, lt)
+end
+
+function _thermal_impurity_occupation(εd::Real, U::Real, β::Real)
+    isinf(β) && return Float64(εd < 0.0)
+    w = exp.(-β .* [0.0, εd, εd, 2εd + U])   # empty, up, down, full
+    return (w[2] + w[4]) / sum(w)
 end
 
 function main(outfile::String = joinpath(@__DIR__, "benchmark_tcmps.csv"))

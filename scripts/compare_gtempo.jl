@@ -18,7 +18,12 @@ function read_csv(path)
     for r in rows[2:end]
         isempty(r) && continue
         f = split(r, ",")
-        cfg, β, t, v = f[1], f[2], parse(Float64, f[3]), parse(ComplexF64, f[end])
+        # TCMPS csv: config,nbaths,beta,t,gt,lt — the GTEMPO csv: config,beta,t,gt
+        if basename(path) == "benchmark_tcmps.csv"
+            cfg, t, v = f[1], parse(Float64, f[4]), parse(ComplexF64, f[5])
+        else
+            cfg, t, v = f[1], parse(Float64, f[3]), parse(ComplexF64, f[end])
+        end
         get!(get!(data, cfg, Dict{Float64,ComplexF64}()), t, v)
     end
     return data
@@ -31,7 +36,7 @@ function main()
     failures = Tuple{String,Float64,Float64,Float64}[]
     for cfg in sort!(collect(keys(ours)))
         haskey(theirs, cfg) || (println("SKIP (no GTEMPO data): ", cfg); continue)
-        for (t, v) in sort(collect(ours[cfg]))
+        for (t, v) in sort(collect(ours[cfg]), by = first)
             t == 0 && continue                          # GTEMPO grid starts at δt
             haskey(theirs[cfg], t) || continue
             Δ = abs(v - theirs[cfg][t])
@@ -40,6 +45,21 @@ function main()
         end
     end
     println("worst |Δgt| = ", worst)
+    # accuracy envelope: the largest t such that ALL configs stay within the
+    # tolerance for every grid point in (0, t]
+    all_times = sort(collect(union([Set(keys(theirs[c])) for c in keys(theirs)]...)))
+    env = 0.0
+    for t in all_times
+        t == 0 && continue
+        ok = true
+        for cfg in keys(ours)
+            (haskey(ours[cfg], t) && haskey(theirs[cfg], t)) || continue
+            abs(ours[cfg][t] - theirs[cfg][t]) > TOL && (ok = false; break)
+        end
+        ok || break
+        env = t
+    end
+    println("accuracy envelope (all configs within ", TOL, "): t ≤ ", env)
     if isempty(failures)
         println("G4 PASS (tolerance ", TOL, ")")
     else
