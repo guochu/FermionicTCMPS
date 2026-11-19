@@ -1,6 +1,6 @@
 # FermionicTCMPS 复活瘦身计划
 
-**日期**: 2026-11-19 · **状态**: rev 4 待实施（D1''/D5 已由用户裁决关闭）
+**日期**: 2026-11-19 · **状态**: rev 4 已实施（2026-11-19，revival-slim 分支；G2/G3 全绿；G4 greater-only——sweep-TDVP 长程级联局限见 README）
 **目标**: 复活 FermionicTCMPS 为 GTEMPO 的独立对照实现——星型 thermofield AIM 的可分离初态直接实时演化，TensorKit U₁×U₁ 对称张量栈。
 
 ---

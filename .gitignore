@@ -1,2 +1,3 @@
 Manifest.toml
 tmp/
+scripts/benchmark_*.csv
