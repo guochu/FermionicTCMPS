@@ -1,0 +1,11 @@
+[deps]
+DMRG = "1240110f-4488-488b-9691-4f58b4220f75"
+FermionicTCMPS = "26f6b186-d955-4bb6-9b24-d19c2a16279e"
+ImpurityModelBase = "a5817ebb-6d84-46c1-a17a-d25f868e249e"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+TensorKit = "07d1fe3e-3e46-537d-9eac-e9e13d0d4cec"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[compat]
+julia = "1.10"
