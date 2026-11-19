@@ -114,7 +114,7 @@ src 2741 → **~600–900 行**（无 vendor）；导出 33 → 8。
 ## 3. 实施步骤（五 Phase，~5–7 天）
 
 ### Phase 0 — 环境底座（~0.5 天）
-1. `git checkout -b revival-slim`；`Project.toml` 重写：deps = `TensorKit` + `DMRG`(dev `tmp/DMRG`) + `ImpurityModelBase`(dev `../../ImpurityModelBase`) + `LinearAlgebra`；`test/Project.toml` 同源（`--project=test` 跑法）。
+1. `git checkout -b revival-slim`；`Project.toml` 重写：deps = `TensorKit` + `DMRG`(dev `../DMRG`，2026-11-19 移至 Missile 层) + `ImpurityModelBase`(dev `../../ImpurityModelBase`) + `LinearAlgebra`；`test/Project.toml` 同源（`--project=test` 跑法）。
 2. `tmp/GeneralHamiltonians`、`tmp/TEBD` 退役（G3 后删）；`tmp/FiniteMPSAlgorithms` 保留仅作 FMA 思想 diff 参照（无代码拷贝）。
 
 **闸门 G0**: `--project=test` 全量加载成功。
@@ -164,4 +164,4 @@ README（极小范围/依赖/跑法/引用 2012.01424）；docstring 统一；�
 3. **系数-开启端路径的自证风险**：方案 b（系数放开启端、单通道线性累积）是 FMA `PairOpTerm` 约定（系数放闭合端）之外的路线，无现成实现对照——正确性完全依赖 G2 稠密锚；双浴四方向（左右浴 × 跳变/h.c.）逐一覆盖，不许只测右浴。
 4. **U₁×U₁ 局域算符**：`d↑`/`d↓` 的 intra-site JW 相位与 `P` 的扇区对角值，沿 `sp_u1u1` 定义抄写并在 G2 锚定；`P` 为 charge-(0,0) 内蕴算符（宇称串不改变通道键荷）。
 5. **β→∞ 退化**：`√(1−n_k)`→1、`√n_k`→0，a₂ 支退耦——覆盖测试。
-6. **DMRG 版本**：dev 固定 `tmp/DMRG` 快照（f141e43 时代的 HEAD `a0f239c`）；上游变更手动同步。
+6. **DMRG 版本**：dev 固定 `../DMRG` 快照（原 `tmp/DMRG`，2026-11-19 移至 Missile 层）（f141e43 时代的 HEAD `a0f239c`）；上游变更手动同步。

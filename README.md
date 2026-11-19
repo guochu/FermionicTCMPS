@@ -91,5 +91,5 @@ temperature is fully validated (the a₂ branch seeds the cascade).
 julia --project=test test/runtests.jl
 ```
 
-Dependencies: `TensorKit` (pinned 0.13), `DMRG` (dev path `tmp/DMRG`),
+Dependencies: `TensorKit` (pinned 0.13), `DMRG` (dev path `../DMRG`, the Missile-level engine snapshot),
 `ImpurityModelBase` (dev path), `LinearAlgebra`.
