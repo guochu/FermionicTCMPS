@@ -147,7 +147,9 @@ function chain_spec(x::SISBD)
         push!(hc_down.closes, CloseEnd(s1, x.J * v1[k], _adag_down))
         push!(hc_down.closes, CloseEnd(s2, x.J * v2[k], _bdag_down))
     end
-    return ChainSpec(1, kinds, spaces, onsite, FSMChannel[hop_up, hop_down, hc_up, hc_down])
+    channels = FSMChannel[hop_up, hop_down, hc_up, hc_down]
+    _drop_zero_ends!.(channels)
+    return ChainSpec(1, kinds, spaces, onsite, channels)
 end
 
 function chain_spec(x::SIDBD)
@@ -207,5 +209,16 @@ function chain_spec(x::SIDBD)
     end
     channels = FSMChannel[l_hop_up, l_hop_down, l_hc_up, l_hc_down,
                           r_hop_up, r_hop_down, r_hc_up, r_hc_down]
+    _drop_zero_ends!.(channels)
     return ChainSpec(imp, kinds, spaces, onsite, channels)
+end
+
+# zero-coefficient ends would produce zero-valued tensor entries, which the
+# SchurMPO sparse iteration drops — breaking the environment propagation of the
+# channel through those sites. Drop them at construction instead; the MPO is
+# unchanged (they contributed nothing) and the channel carriers stay connected.
+function _drop_zero_ends!(c::FSMChannel)
+    filter!(o -> !iszero(o.coef), c.opens)
+    filter!(cl -> !iszero(cl.coef), c.closes)
+    return c
 end

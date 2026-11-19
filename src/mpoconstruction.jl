@@ -127,16 +127,22 @@ function _site_tensor(spec::ChainSpec, k::Int, row_ch::Vector{FSMChannel}, col_c
     return _schur_tensor(T, mat, row_charges, col_charges, ps)
 end
 
+const _id_table = table(
+    (P_VAC, P_VAC) => 1.0,
+    (P_UP, P_UP) => 1.0,
+    (P_DOWN, P_DOWN) => 1.0,
+    (P_FULL, P_FULL) => 1.0,
+)
+
 """
-    site_operator_mpo([T=Float64], spaces, position, amps; kinds=nothing)
+    site_operator_mpo([T=Float64], spaces, position, amps)
 
 Identity MPO with the single-site operator `amps` inserted at `position`. The two
 slots are [closed (charge 0), inserted (charge = q_out − q_in of the operator)], so
 charge-changing insertions (e.g. Green's function operators) contract cleanly
 between states whose total charges differ by exactly that operator charge.
 """
-function site_operator_mpo(::Type{T}, spaces::Vector{<:ElementarySpace}, position::Int, amps::OpTable;
-                           kinds::Union{Nothing,Vector{Symbol}} = nothing) where {T<:Number}
+function site_operator_mpo(::Type{T}, spaces::Vector{<:ElementarySpace}, position::Int, amps::OpTable) where {T<:Number}
     deltas = Charge[_add(p.first[1], (-p.first[2][1], -p.first[2][2])) for p in amps]
     isempty(deltas) && throw(ArgumentError("empty operator table"))
     all(==(deltas[1]), deltas) || throw(ArgumentError("operator table is not charge-pure"))
@@ -147,12 +153,11 @@ function site_operator_mpo(::Type{T}, spaces::Vector{<:ElementarySpace}, positio
         mat = Matrix{Any}(undef, 2, 2)
         fill!(mat, zero(T))
         mat[1, 1] = one(T)
-        par = (kinds !== nothing && kinds[k] === :hole) ? _hole_parity : _parity
-        mat[2, 2] = entry_tensor(T, q_op, q_op, spaces[k], par)
+        mat[2, 2] = entry_tensor(T, q_op, q_op, spaces[k], _id_table)
         (k == position) && (mat[1, 2] = entry_tensor(T, SLOT_CLOSED, q_op, spaces[k], amps))
         ws[k] = _schur_tensor(T, mat, [SLOT_CLOSED, q_op], [SLOT_CLOSED, q_op], spaces[k])
     end
     return SchurMPO([w for w in ws])
 end
-site_operator_mpo(spaces::Vector{<:ElementarySpace}, position::Int, amps::OpTable; kwargs...) =
-    site_operator_mpo(Float64, spaces, position, amps; kwargs...)
+site_operator_mpo(spaces::Vector{<:ElementarySpace}, position::Int, amps::OpTable) =
+    site_operator_mpo(Float64, spaces, position, amps)

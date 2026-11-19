@@ -12,7 +12,7 @@ function occupation_op(x::Union{SISBD,SIDBD}; spin::Symbol = :up)
     (spin === :up || spin === :down) || throw(ArgumentError("spin must be :up or :down"))
     spec = chain_spec(x)
     amps = spin === :up ? _n_up : _n_down
-    return site_operator_mpo(spec.spaces, spec.imp_site, amps; kinds = spec.kinds)
+    return site_operator_mpo(spec.spaces, spec.imp_site, amps)
 end
 
 """
@@ -60,52 +60,52 @@ function _shifted_state(x::Union{SISBD,SIDBD}, imp_up::Int, imp_down::Int, spin:
     sectors = [_sector(k == spec.imp_site ? q_out : (0, 0)) for k in 1:length(spec.kinds)]
     ψ = prodmps(ComplexF64, spec.spaces, sectors)
     ψ[spec.imp_site] = amp * ψ[spec.imp_site]
-    return ψ
+    return _widen_svectors(ψ)
 end
 
 """
     gf_greater_lesser_t(x, times; imp_up=0, imp_down=0, δt, trunc) -> (gt, lt)
 
-Spin-summed real-time impurity Green's function in the thermofield state,
+Spin-summed real-time impurity Green's function of the thermo-field state,
 G^>(t) = −i⟨d(t)d†(0)⟩ and G^<(t) = i⟨d†(0)d(t)⟩.
 
-Algorithm: forward evolutions in lockstep from t = 0 — the state itself, the d†-inserted
-chains (greater) and the d-inserted chains (lesser) — sampled at every `times` entry via
-a bond-dimension-2 insertion MPO expectation (one MPS×MPO×MPS contraction per sample).
-`times` must be sorted, non-negative and lie on the δt grid. A spin channel whose
-insertion annihilates the impurity state contributes zero and is skipped.
+The separable TFD state is an eigenstate of the chain Hamiltonian (every hopping
+term annihilates the fiducial bath), so the correlators reduce to same-charge
+overlaps of freely evolved insertion chains,
+G^>(t) = −i·e^{iEt}·⟨χ|χ(t)⟩ with χ = d†|ψ₀⟩ and
+G^<(t) = +i·e^{−iEt}·conj⟨η|η(t)⟩ with η = d|ψ₀⟩,
+where E = ⟨ψ₀|H|ψ₀⟩. Spin channels whose insertion annihilates the state contribute
+zero. `times` must be sorted, non-negative and lie on the δt grid.
 """
 function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real};
                              imp_up::Int = 0, imp_down::Int = 0, δt::Real,
                              trunc::DMRG.TruncationDimCutoff = truncdimcutoff(D = 256, ϵ = 1.0e-10))
-    spec = chain_spec(x)
     h = mpo(x)
-    pos = spec.imp_site
 
     steps = round.(Int, times ./ δt)
     all(abs(s * δt - t) ≤ 1e-8 * max(1.0, abs(t)) for (s, t) in zip(steps, times)) ||
         throw(ArgumentError("times must lie on the δt grid"))
     (issorted(times) && first(times) ≥ 0) || throw(ArgumentError("times must be sorted and non-negative"))
 
-    d_ops = Dict(:up => site_operator_mpo(spec.spaces, pos, _a_up; kinds = spec.kinds),
-                 :down => site_operator_mpo(spec.spaces, pos, _a_down; kinds = spec.kinds))
-    ddag_ops = Dict(:up => site_operator_mpo(spec.spaces, pos, _adag_up; kinds = spec.kinds),
-                    :down => site_operator_mpo(spec.spaces, pos, _adag_down; kinds = spec.kinds))
-
     ψ0 = separable_state(x; imp_up, imp_down)
-    ψ = separable_state(x; imp_up, imp_down)
-    ψcache = environments(h, ψ)
+    E = real(expectationvalue(h, ψ0))   # the fiducial state is an H eigenstate
     alg = _tdvp2(δt, trunc)
 
-    greater = NTuple{4,Any}[]   # (χ, cache, d-op MPO, spin)
-    lesser = NTuple{4,Any}[]    # (η, cache, d†-op MPO, spin)
+    chains = NTuple{3,Any}[]            # (state, cache, kind::Symbol)
+    greater = NTuple{2,Any}[]           # (chain index, initial state)
+    lesser = NTuple{2,Any}[]
     for (spin, nσ) in ((:up, imp_up), (:down, imp_down))
-        if nσ == 0
-            χ = _shifted_state(x, imp_up, imp_down, spin, 1)
-            χ === nothing || push!(greater, (χ, environments(h, χ), d_ops[spin], spin))
-        else
-            η = _shifted_state(x, imp_up, imp_down, spin, -1)
-            η === nothing || push!(lesser, (η, environments(h, η), ddag_ops[spin], spin))
+        χ = _shifted_state(x, imp_up, imp_down, spin, 1)
+        if χ !== nothing
+            cache = environments(h, χ)
+            push!(chains, (χ, cache, :greater))
+            push!(greater, (length(chains), _shifted_state(x, imp_up, imp_down, spin, 1)))
+        end
+        η = _shifted_state(x, imp_up, imp_down, spin, -1)
+        if η !== nothing
+            cache = environments(h, η)
+            push!(chains, (η, cache, :lesser))
+            push!(lesser, (length(chains), _shifted_state(x, imp_up, imp_down, spin, -1)))
         end
     end
 
@@ -114,16 +114,18 @@ function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real
     prev = 0
     for (i, n) in enumerate(steps)
         for _ in (prev + 1):n
-            sweep!(ψcache, alg)
-            foreach(g -> sweep!(g[2], alg), greater)
-            foreach(l -> sweep!(l[2], alg), lesser)
+            foreach(c -> sweep!(c[2], alg), chains)
         end
         prev = n
-        for (χ, _, op, _) in greater
-            gt[i] += -im * expectation(ψ, op, χ)
+        gtphase = -im * exp(im * E * times[i])
+        ltphase = im * exp(-im * E * times[i])
+        for (cid, χ0) in greater
+            state = chains[cid][1]
+            gt[i] += gtphase * dot(χ0, state)
         end
-        for (η, _, op, _) in lesser
-            lt[i] += im * expectation(ψ0, op, η)
+        for (cid, η0) in lesser
+            state = chains[cid][1]
+            lt[i] += ltphase * conj(dot(η0, state))
         end
     end
     return gt, lt
