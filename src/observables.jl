@@ -79,7 +79,7 @@ zero. `times` must be sorted, non-negative and lie on the δt grid.
 """
 function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real};
                              imp_up::Int = 0, imp_down::Int = 0, δt::Real,
-                             trunc::DMRG.TruncationDimCutoff = truncdimcutoff(D = 256, ϵ = 1.0e-10))
+                             trunc::DMRG.TruncationDimCutoff = truncdimcutoff(D = 256, ϵ = 1.0e-10, add_back = MIND))
     h = mpo(x)
 
     steps = round.(Int, times ./ δt)

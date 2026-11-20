@@ -25,7 +25,7 @@ Random.seed!(20261119)
 
 const δt = 0.02
 const TIMES = collect(0.0:0.1:1.0)
-const TRUNC = truncdimcutoff(D = 256, ϵ = 1e-10)
+const TRUNC = truncdimcutoff(D = 256, ϵ = 1e-10, add_back = 10)
 
 # ---------- flat-vector helpers on the mechanical-JW dense Hamiltonian ----------
 

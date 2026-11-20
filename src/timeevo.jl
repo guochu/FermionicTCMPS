@@ -1,13 +1,25 @@
 # ==============================================================================
 # Real-time evolution driven by two-site TDVP.
+#
+# Projection note (seeding): with coupling terms spanning beyond the current
+# sweep pair, the two-site projection zeroes the corresponding amplitudes when
+# the bond spaces carry no directions for them yet — from a sharp product state
+# the dynamics then gets stuck (Kohn–Santoro 2107.02807, Appendix C, "TDVP
+# beyond nearest neighbor"). The prescribed cure is a minimum bond dimension:
+# keep discarded singular directions via the truncation's add_back, so the
+# tangent space retains room for the not-yet-seeded amplitudes. The pipeline
+# defaults therefore use truncdimcutoff(D, ϵ, add_back = MIND) with MIND = 10
+# (the value validated in the KS appendix).
 # ==============================================================================
+
+const MIND = 10   # minimum bond dimension kept for the projection directions
 
 function _tdvp2(δt::Real, trunc::DMRG.TruncationDimCutoff)
     return TDVP2(stepsize = -im * δt, ishermitian = true, trunc = trunc)
 end
 
 """
-    evolve!(ψ, h; δt, nsteps, trunc=truncdimcutoff(D=256, ϵ=1e-10))
+    evolve!(ψ, h; δt, nsteps, trunc=truncdimcutoff(D=256, ϵ=1e-10, add_back=MIND))
     evolve!(ψ, h, tspan; δt, trunc)
 
 Evolve `ψ` under the MPO Hamiltonian `h` in real time (|ψ⟩ → exp(−iHt)|ψ⟩) with
@@ -16,7 +28,7 @@ two-site TDVP, one full left+right sweep per step, truncating with `trunc`.
 and returned.
 """
 function evolve!(ψ, h; δt::Real, nsteps::Integer,
-                 trunc::DMRG.TruncationDimCutoff = truncdimcutoff(D = 256, ϵ = 1.0e-10))
+                 trunc::DMRG.TruncationDimCutoff = truncdimcutoff(D = 256, ϵ = 1.0e-10, add_back = MIND))
     alg = _tdvp2(δt, trunc)
     cache = environments(h, ψ)
     for _ in 1:nsteps
