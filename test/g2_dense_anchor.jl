@@ -98,3 +98,50 @@ end
     end
     @test err < 1e-12
 end
+
+@testset "G2 dense anchor: current operator MPO (double bath)" begin
+    # the mid-chain impurity exercises both current-channel families (left-bath
+    # coefficients at the opening end, right-bath at the closing end)
+    Random.seed!(78)
+    xl = discretefermionicvacuum([-0.6], [0.5]; μ = 0.0)
+    xr = discretefermionicbath([0.7], [0.35]; β = 0.9, μ = 0.1)
+    x = SIDBD(xl, xr; U = 1.2, εd = 0.1, Jl = 1.3, Jr = 0.8)
+    spec = FermionicTCMPS.chain_spec(x)
+    imp = spec.imp_site
+    wsl, vl1, vl2 = FermionicTCMPS.thermofield_couplings(x.bathl)
+    wsr, vr1, vr2 = FermionicTCMPS.thermofield_couplings(x.bathr)
+    hoppings = vcat([(2k - 1, x.Jl * vl1[k]) for k in eachindex(vl1)],
+                    [(2k, x.Jl * vl2[k]) for k in eachindex(vl2)],
+                    [(imp + 2k - 1, x.Jr * vr1[k]) for k in eachindex(vr1)],
+                    [(imp + 2k, x.Jr * vr2[k]) for k in eachindex(vr2)])
+    L = length(spec.kinds)
+
+    occs = _all_occs(L)
+    prefixes = Vector{Any}(undef, L + 1)
+    prefixes[1] = ones(1, 1)
+    for s in 1:L
+        prefixes[s+1] = kron(prefixes[s], _LOC.par)
+    end
+    imp_ops = (_kron3(prefixes[imp], _LOC.cup, _suffix_id(L - imp)),
+               _kron3(prefixes[imp], _LOC.cdn, _suffix_id(L - imp)))
+    Jd = zeros(4^L, 4^L)
+    for (s, vc) in hoppings
+        site_ops = spec.kinds[s] === :hole ?
+                   (_kron3(prefixes[s], _LOC.bup, _suffix_id(L - s)),
+                    _kron3(prefixes[s], _LOC.bdn, _suffix_id(L - s))) :
+                   (_kron3(prefixes[s], _LOC.cup, _suffix_id(L - s)),
+                    _kron3(prefixes[s], _LOC.cdn, _suffix_id(L - s)))
+        Jd .+= (imp_ops[1]' * site_ops[1] .+ site_ops[1]' * imp_ops[1]) .* vc
+        Jd .+= (imp_ops[2]' * site_ops[2] .+ site_ops[2]' * imp_ops[2]) .* vc
+    end
+    jop = current_op(x)
+    err = 0.0
+    for _ in 1:300
+        v, w = rand(occs), rand(occs)
+        _qtotal(spec, v) == _qtotal(spec, w) || continue
+        ψv = _basis_state(spec, v)
+        ψw = _basis_state(spec, w)
+        err = max(err, abs(expectation(ψv, jop, ψw) - Jd[_flat(spec, v), _flat(spec, w)]))
+    end
+    @test err < 1e-12
+end

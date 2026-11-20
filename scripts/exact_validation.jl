@@ -136,6 +136,32 @@ end
 
 # ---------- config runner ----------
 
+"ET leg of the lesser GF: η = d|ψ₀⟩ chains, only occupied spin channels contribute"
+function _et_lt(x, times; imp_up = 0, imp_down = 0)
+    h = mpo(x)
+    ψ0m = separable_state(x; imp_up, imp_down)
+    E = real(expectationvalue(h, ψ0m))
+    lt = zeros(ComplexF64, length(times))
+    for (spin, nσ) in ((:up, imp_up), (:down, imp_down))
+        nσ == 0 && continue   # lesser needs an occupied spin channel
+        η0 = ExactMPS(FermionicTCMPS._shifted_state(x, imp_up, imp_down, spin, -1))
+        env = environments(h, η0)
+        c = η0.center
+        snapshot = reshape(convert(Array, η0[c]), :)
+        prev = 0
+        for (i, t) in enumerate(times)
+            n = round(Int, t / δt)
+            for _ in (prev + 1):n
+                exact_timeevolution!(env, -im * δt; ishermitian = true)
+            end
+            prev = n
+            cur = reshape(convert(Array, env.state[c]), :)
+            lt[i] += im * exp(-im * E * t) * conj(dot(snapshot, cur))
+        end
+    end
+    return lt
+end
+
 function run_config(name, x, couples, L; εd, U, imp_up = 0, imp_down = 0)
     spec = FermionicTCMPS.chain_spec(x)
     H = dense_hamiltonian(copy(spec.kinds), spec.imp_site, couples; εd, U)
@@ -161,22 +187,26 @@ function run_config(name, x, couples, L; εd, U, imp_up = 0, imp_down = 0)
     nd_exact = _nd_exact(H, ψ0, TIMES, L, spec.imp_site)
 
     gt_et = _et_gt(x, TIMES; imp_up, imp_down)
+    lt_et = _et_lt(x, TIMES; imp_up, imp_down)
     gt_sw, lt_sw = gf_greater_lesser_t(x, TIMES; δt = δt, trunc = TRUNC, imp_up, imp_down)
     nd_sw = _sweep_nd(x; imp_up, imp_down)
 
     fmt(v) = round(v, digits = 6)
+    fmt2(v) = round(v, digits = 10)
     Δgt_et = maximum(abs.(gt_et - gt_exact))
+    Δlt_et = maximum(abs.(lt_et - lt_exact))
     Δgt_sw = maximum(abs.(gt_sw - gt_exact))
     Δlt_sw = maximum(abs.(lt_sw - lt_exact))
     Δnd_sw = maximum(abs(get(nd_sw, round(t; digits = 6), 0.0) - nd_exact[i])
                      for (i, t) in enumerate(TIMES) if t > 0)
     println("== ", name, "  (imp = ", (imp_up, imp_down), ") ==")
     println("   |gt| exact at (0.1, 1.0): ", fmt(abs(gt_exact[2])), " / ", fmt(abs(gt_exact[end])))
-    println("   Δgt  exact_timeevolution(our MPO) vs dense: ", fmt(Δgt_et))
+    println("   Δgt  exact_timeevolution(our MPO) vs dense: ", fmt(Δgt_et), "  (raw ", fmt2(Δgt_et), ")")
+    println("   Δlt  exact_timeevolution(our MPO) vs dense: ", fmt(Δlt_et), "  (raw ", fmt2(Δlt_et), ")")
     println("   Δgt  sweep-TDVP vs dense:                   ", fmt(Δgt_sw))
     println("   Δlt  sweep-TDVP vs dense:                   ", fmt(Δlt_sw))
     println("   Δn   sweep-TDVP vs dense:                   ", fmt(Δnd_sw))
-    return (Δgt_et = Δgt_et, Δgt_sw = Δgt_sw, Δlt_sw = Δlt_sw, Δnd_sw = Δnd_sw)
+    return (Δgt_et = Δgt_et, Δlt_et = Δlt_et, Δgt_sw = Δgt_sw, Δlt_sw = Δlt_sw, Δnd_sw = Δnd_sw)
 end
 
 function main()
@@ -221,6 +251,22 @@ function main()
     couples = vcat([(2k - 1, 2k, wsl[k], x.Jl * vl1[k], x.Jl * vl2[k]) for k in 1:length(wsl)],
                    [(imp + 2k - 1, imp + 2k, wsr[k], x.Jr * vr1[k], x.Jr * vr2[k]) for k in 1:length(wsr)])
     run_config("E double 1+1mode finiteβ U=1.7", x, couples, 5; εd = -0.3, U = 1.7)
+
+    # F. single 2-mode vacuum above μ, interacting, HOT impurity — the ET legs
+    # must stay exact here too (the sweep legs quantify the TDVP2 sharp-state
+    # limitation on the down-channel greater / up-channel lesser)
+    x = SISBD(discretefermionicvacuum(wsc, fsc; μ = 0.0); U = 1.7, εd = 0.2, J = 1.0)
+    _, v1f, v2f = FermionicTCMPS.thermofield_couplings(x.bath)
+    run_config("F single 2mode vacuum-above U=1.7 hot imp", x,
+        [(2k, 2k + 1, wsc[k], x.J * v1f[k], x.J * v2f[k]) for k in eachindex(wsc)], 5;
+        εd = 0.2, U = 1.7, imp_up = 1)
+
+    # G. double bath 1+1 mode finite β, interacting, HOT impurity
+    x = SIDBD(xl, xr; U = 1.7, εd = -0.3, Jl = 1.0, Jr = 1.0)
+    specg = FermionicTCMPS.chain_spec(x)
+    impg = specg.imp_site
+    run_config("G double 1+1mode finiteβ U=1.7 hot imp", x, couples, 5;
+        εd = -0.3, U = 1.7, imp_up = 1)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
