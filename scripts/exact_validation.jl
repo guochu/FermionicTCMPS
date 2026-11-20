@@ -39,15 +39,15 @@ _occ_of(L, idx) = ntuple(s -> begin
 end, L)
 
 "χ = d†_σ|ψ⟩ or η = d_σ|ψ⟩ as a flat vector; nothing if the insertion kills ψ"
-function _insert_vector(ψvec::Vector{ComplexF64}, spin::Symbol, delta::Int, L::Int)
+function _insert_vector(ψvec::Vector{ComplexF64}, spin::Symbol, delta::Int, L::Int, imp::Int)
     tbl = spin === :up ? (delta == 1 ? FermionicTCMPS._adag_up : FermionicTCMPS._a_up) :
           (delta == 1 ? FermionicTCMPS._adag_down : FermionicTCMPS._a_down)
-    step = spin === :up ? 4^(L - 1) : 2 * 4^(L - 1)
+    step = spin === :up ? 4^(L - imp) : 2 * 4^(L - imp)
     out = zeros(ComplexF64, length(ψvec))
     found = false
     for i in eachindex(ψvec)
         iszero(ψvec[i]) && continue
-        q_in = _occ_of(L, i)[1]   # site 1 = the impurity; (n↑, n↓) pair
+        q_in = _occ_of(L, i)[imp]   # impurity (n↑, n↓) pair
         q_out = spin === :up ? (q_in[1] + delta, q_in[2]) : (q_in[1], q_in[2] + delta)
         ((0 <= q_out[1] <= 1) && (0 <= q_out[2] <= 1)) || continue
         amp = FermionicTCMPS._amplitude(tbl, q_out, q_in)
@@ -75,10 +75,10 @@ end
 
 "exact ⟨n_imp↑(t)⟩ — the operator is diagonal in the FLAT basis, so evolve the
 flat amplitudes through the eigendecomposition before contracting"
-function _nd_exact(H::Matrix{Float64}, ψ0::Vector{ComplexF64}, times, L::Int)
+function _nd_exact(H::Matrix{Float64}, ψ0::Vector{ComplexF64}, times, L::Int, imp::Int)
     F = eigen(Hermitian(H))
     g = F.vectors' * ψ0
-    nd_diag = [((i - 1) ÷ 4^(L - 1)) % 4 in (1, 3) ? 1.0 : 0.0 for i in 1:size(H, 1)]
+    nd_diag = [((i - 1) ÷ 4^(L - imp)) % 4 in (1, 3) ? 1.0 : 0.0 for i in 1:size(H, 1)]
     out = zeros(Float64, length(times))
     for (i, t) in enumerate(times)
         ψt = F.vectors * (exp.(-im .* F.values .* t) .* g)
@@ -148,17 +148,17 @@ function run_config(name, x, couples, L; εd, U, imp_up = 0, imp_down = 0)
     ψ0[idx0] = 1.0
     E0 = real(H[idx0, idx0])
 
-    χ_up = _insert_vector(ψ0, :up, 1, L)
-    χ_dn = _insert_vector(ψ0, :down, 1, L)
-    η_up = _insert_vector(ψ0, :up, -1, L)
-    η_dn = _insert_vector(ψ0, :down, -1, L)
+    χ_up = _insert_vector(ψ0, :up, 1, L, spec.imp_site)
+    χ_dn = _insert_vector(ψ0, :down, 1, L, spec.imp_site)
+    η_up = _insert_vector(ψ0, :up, -1, L, spec.imp_site)
+    η_dn = _insert_vector(ψ0, :down, -1, L, spec.imp_site)
     overlaps, = _exact_overlaps(H, Any[χ_up, χ_dn, η_up, η_dn], TIMES)
 
     gt_exact = [-im * exp(im * E0 * t) * (overlaps[1][i] + overlaps[2][i])
                 for (i, t) in enumerate(TIMES)]
     lt_exact = [im * exp(-im * E0 * t) * conj(overlaps[3][i] + overlaps[4][i])
                 for (i, t) in enumerate(TIMES)]
-    nd_exact = _nd_exact(H, ψ0, TIMES, L)
+    nd_exact = _nd_exact(H, ψ0, TIMES, L, spec.imp_site)
 
     gt_et = _et_gt(x, TIMES; imp_up, imp_down)
     gt_sw, lt_sw = gf_greater_lesser_t(x, TIMES; δt = δt, trunc = TRUNC, imp_up, imp_down)

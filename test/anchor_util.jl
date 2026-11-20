@@ -55,10 +55,14 @@ function dense_hamiltonian(kinds::Vector{Symbol}, imp::Int,
 
     dim = 4^L
     H = zeros(dim, dim)
-    # local impurity terms
-    # impurity on-site: site 1, empty JW prefix, so sitename is parity-free
-    H .+= εd .* (sitename(_LOC.nup, imp) .+ sitename(_LOC.ndn, imp))
-    (U != 0.0) && (H .+= U .* sitename(_LOC.nn, imp))
+    # local impurity terms — even operators carry no JW string, so embed them
+    # WITHOUT the parity prefix: sitename would attach ∏_{t<imp} P_t, which flips
+    # the diagonal sign on bath states with odd parity left of a mid-chain
+    # impurity (every double-bath model; single-bath models have imp = 1 and an
+    # empty prefix, which is how this slipped past the off-diagonal-only sampling)
+    sitename_bare(M, s) = _kron3(_suffix_id(s - 1), M, _suffix_id(L - s))
+    H .+= εd .* (sitename_bare(_LOC.nup, imp) .+ sitename_bare(_LOC.ndn, imp))
+    (U != 0.0) && (H .+= U .* sitename_bare(_LOC.nn, imp))
     # chain annihilation operators for the hopping terms
     imp_ops = (_kron3(prefixes[imp], _LOC.cup, _suffix_id(L - imp)),
                _kron3(prefixes[imp], _LOC.cdn, _suffix_id(L - imp)))
@@ -140,6 +144,11 @@ function _anchor_model(x, H_dense; nsample::Int = 250)
     for r in refs, o in sample
         push!(pairs, (r, o))
         push!(pairs, (o, r))
+    end
+    # diagonal elements: random pairs essentially never repeat a state, so the
+    # on-site (diagonal) part of H is only exercised here
+    for o in sample, r in refs
+        push!(pairs, (o, o))
     end
     for _ in 1:nsample
         push!(pairs, (rand(occs), rand(occs)))

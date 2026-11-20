@@ -7,7 +7,7 @@
 # The a₂ branch PHT is again exercised through the filled modes below μ.
 # ==============================================================================
 
-using LinearAlgebra: eigen, diagm, tr
+using LinearAlgebra: eigen, diagm, tr, Hermitian
 
 # star single-particle Hamiltonian (per spin block); the star-frame bath couplings
 # are the RAW spectral couplings √f, before the thermofield splitting
@@ -196,6 +196,86 @@ end
     # two-site TDVP is second order: halving δt quarters the error
     @test e2 < e1 / 2.5
     @test e2 < 5e-6
+end
+
+# exact (dense mechanical-JW) impurity greater GF of the chain-frame fiducial state:
+# G^>(t) = −i·e^{iE₀t}·⟨χ|e^{−iHt}|χ⟩ summed over the spin insertions χ = d†_σ|ψ₀⟩
+function _dense_greater(x, couples, times)
+    spec = FermionicTCMPS.chain_spec(x)
+    L = length(spec.kinds); imp = spec.imp_site
+    H = dense_hamiltonian(copy(spec.kinds), imp, couples; εd = x.εd, U = x.U)
+    flat(occs) = 1 + sum((occs[s][1] + 2 * occs[s][2]) * 4^(L - s) for s in 1:L)
+    occs0 = ntuple(i -> i == imp ? (0, 0) : (spec.kinds[i] === :hole ? (1, 1) : (0, 0)), L)
+    ψ0 = zeros(ComplexF64, 4^L); ψ0[flat(occs0)] = 1.0
+    E0 = real(H[flat(occs0), flat(occs0)])
+    F = eigen(Hermitian(H))
+    gt = zeros(ComplexF64, length(times))
+    for (tbl, step, up) in ((FermionicTCMPS._adag_up, 4^(L - imp), true),
+                            (FermionicTCMPS._adag_down, 2 * 4^(L - imp), false))
+        χ = zeros(ComplexF64, 4^L); found = false
+        for i in eachindex(ψ0)
+            iszero(ψ0[i]) && continue
+            d = (i - 1) ÷ 4^(L - imp) % 4
+            q_in = (d == 1 || d == 3 ? 1 : 0, d >= 2 ? 1 : 0)
+            q_out = up ? (1, q_in[2]) : (q_in[1], 1)
+            (q_out[1] <= 1 && q_out[2] <= 1) || continue
+            amp = FermionicTCMPS._amplitude(tbl, q_out, q_in)
+            amp === nothing && continue
+            χ[i + step] += amp * ψ0[i]; found = true
+        end
+        found || continue
+        g = F.vectors' * χ
+        for (j, t) in enumerate(times)
+            gt[j] += -im * exp(im * E0 * t) *
+                     sum(abs2(g[k]) * exp(-im * F.values[k] * t) for k in eachindex(g))
+        end
+    end
+    return gt
+end
+
+@testset "G3 free dynamics: double bath dense chain leg vs star frame" begin
+    # machine-precision physical anchor for the mid-chain-impurity geometry: the
+    # mechanical-JW chain Hamiltonian (test/anchor_util.jl, impurity on-site
+    # WITHOUT a JW prefix) evolving the fiducial product state reproduces the
+    # star-frame thermal free solution exactly
+    Random.seed!(40)
+    times = collect(0.0:0.1:0.5)
+    xl = discretefermionicbath([-0.8], [0.6]; β = 0.8, μ = 0.0)
+    xr = discretefermionicbath([0.5], [0.45]; β = 0.8, μ = 0.0)
+    x = SIDBD(xl, xr; U = 0.0, εd = -0.3, Jl = 1.0, Jr = 1.0)
+    spec = FermionicTCMPS.chain_spec(x)
+    imp = spec.imp_site
+    wsl, vl1, vl2 = FermionicTCMPS.thermofield_couplings(x.bathl)
+    wsr, vr1, vr2 = FermionicTCMPS.thermofield_couplings(x.bathr)
+    couples = vcat([(2k - 1, 2k, wsl[k], x.Jl * vl1[k], x.Jl * vl2[k]) for k in eachindex(wsl)],
+                   [(imp + 2k - 1, imp + 2k, wsr[k], x.Jr * vr1[k], x.Jr * vr2[k]) for k in eachindex(wsr)])
+    gt = _dense_greater(x, couples, times)
+    gtr, = freefermions_greater_lesser(_star_h(x), _rho0(x; imp = 0.0), times, 1, 1)
+    @test maximum(abs.(gt .- 2 .* gtr)) < 1e-10
+end
+
+@testset "G3 free dynamics: double bath sweep vs exact star evolution" begin
+    # the mid-chain impurity exercises both channel families (coefficients at the
+    # opening end on the left bath, at the closing end on the right one); the
+    # star-frame free solution is the physical anchor for that geometry
+    Random.seed!(39)
+    δt = 0.025
+    times = collect(0.0:0.1:0.5)
+    trunc = truncdimcutoff(D = 256, ϵ = 1e-12)
+    xl = discretefermionicbath([-0.8], [0.6]; β = 0.8, μ = 0.0)
+    xr = discretefermionicbath([0.5], [0.45]; β = 0.8, μ = 0.0)
+    x = SIDBD(xl, xr; U = 0.0, εd = -0.3, Jl = 1.0, Jr = 1.0)
+    gt, lt = gf_greater_lesser_t(x, times; δt, trunc)
+    hu = _star_h(x)
+    ρ0 = _rho0(x; imp = 0.0)
+    gtr, ltr = freefermions_greater_lesser(hu, ρ0, times, 1, 1)
+    # the chain-frame conventions are exact for the double bath (see the dense
+    # chain-leg testset above); what remains here is the sweep pipeline's
+    # intrinsic O(δt) splitting error, which does NOT cancel for the mid-chain
+    # geometry (0.0024 at δt = 0.025, halving with δt) — unlike the single-bath
+    # cases above, where the TDVP manifold contains the dynamics
+    @test maximum(abs.(gt .- 2 .* gtr)) < 5e-3        # spin-summed
+    @test maximum(abs.(lt)) < 1e-12                    # d annihilates the empty impurity
 end
 
 @testset "G3 vacuum degeneracy: a₂ branch frozen when μ below spectrum" begin
