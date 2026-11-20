@@ -33,7 +33,7 @@ FermionicTCMPS
 
 ### 1.2 DMRG 包的极小使用面（不裁剪仓库，只约束调用面）
 
-DMRG 包**已导出全部所需容器与算法**（tmp/DMRG 逐条核实）：
+DMRG 包**已导出全部所需容器与算法**（现 `../DMRG`，2026-11-19 移出并删除 tmp/）：
 
 | 符号 | 用途 |
 |------|------|
@@ -115,7 +115,7 @@ src 2741 → **~600–900 行**（无 vendor）；导出 33 → 8。
 
 ### Phase 0 — 环境底座（~0.5 天）
 1. `git checkout -b revival-slim`；`Project.toml` 重写：deps = `TensorKit` + `DMRG`(dev `../DMRG`，2026-11-19 移至 Missile 层) + `ImpurityModelBase`(dev `../../ImpurityModelBase`) + `LinearAlgebra`；`test/Project.toml` 同源（`--project=test` 跑法）。
-2. `tmp/GeneralHamiltonians`、`tmp/TEBD` 退役（G3 后删）；`tmp/FiniteMPSAlgorithms` 保留仅作 FMA 思想 diff 参照（无代码拷贝）。
+2. ~~`tmp/GeneralHamiltonians`、`tmp/TEBD` 退役（G3 后删）；`tmp/FiniteMPSAlgorithms` 保留仅作 FMA 思想 diff 参照~~ → 整个 `tmp/` 已于 2026-11-19 删除（G4 后；DMRG 移至 `Missile/DMRG`）。
 
 **闸门 G0**: `--project=test` 全量加载成功。
 

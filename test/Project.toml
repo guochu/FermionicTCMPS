@@ -1,5 +1,6 @@
 [deps]
 DMRG = "1240110f-4488-488b-9691-4f58b4220f75"
+ExpExp = "05571471-befe-4da2-8d73-f7916647c25f"
 FermionicTCMPS = "26f6b186-d955-4bb6-9b24-d19c2a16279e"
 ImpurityModelBase = "a5817ebb-6d84-46c1-a17a-d25f868e249e"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"

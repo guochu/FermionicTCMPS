@@ -62,10 +62,11 @@ Exports: `SISBD`, `SIDBD`, `mpo`, `separable_state`, `evolve!`,
   impurity occupation vs exact star evolution, conserved-charge and δt²-convergence
   checks.
 * **G4** (`test/gtempo_crosscheck.jl` + `scripts/`): crosscheck against GTEMPO.
-  The two stacks pin different TensorKit majors (0.13 vs 0.17) and cannot share an
-  environment, so the GTEMPO-side values are produced by
+  The GTEMPO-side values are produced by
   `scripts/gtempo_benchmark.jl` (run inside the GTEMPO project) into a CSV that
   the test consumes; `scripts/compare_gtempo.jl` prints the full grid comparison.
+  (Kept as two processes — the GTEMPO project pins its own dependency set, and
+  mixing dev'd stacks in one environment is fragile.)
   The single-mode zero-temperature config agrees on the full complex greater
   function to ≤ 5e-3 (thermal impurity weight `(1−⟨n↑⟩)` per band, our spin-summed
   gt halved). The multi-mode finite-β configs show deviations growing with time
@@ -91,5 +92,10 @@ temperature is fully validated (the a₂ branch seeds the cascade).
 julia --project=test test/runtests.jl
 ```
 
-Dependencies: `TensorKit` (pinned 0.13), `DMRG` (dev path `../DMRG`, the Missile-level engine snapshot),
-`ImpurityModelBase` (dev path), `LinearAlgebra`.
+Dependencies: `TensorKit` (0.17 stack via the ported engine), `DMRG` (dev path
+`../DMRG`, the Missile-level engine snapshot — the TensorKit 0.17 port with
+`MatrixAlgebraKit` and an `ExpExp` dependency, both dev'd from the Missile tree),
+`ImpurityModelBase` (dev path `../ImpurityModelBase`), `LinearAlgebra`.
+
+If the shared `~/.julia/environments/v1.10` pins an incompatible TensorKit,
+isolate Pkg operations: `JULIA_LOAD_PATH="@:@stdlib" julia --project=. -e '...'`.

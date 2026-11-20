@@ -21,7 +21,7 @@ end
 # container typed to DiagonalTensorMap; widen it so the assignment type-checks.
 function _widen_svectors(ψ::DMRG.MPS)
     B = DMRG.MPSBondTensor{spacetype(ψ[1])}
-    raw = getfield(ψ, :svectors)
+    raw = getfield(ψ, :s)
     sv = Vector{Union{Missing, B}}(missing, length(raw))
     for i in eachindex(raw)
         raw[i] isa B && (sv[i] = raw[i])
