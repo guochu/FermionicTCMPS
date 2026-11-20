@@ -61,6 +61,13 @@ Exports: `SISBD`, `SIDBD`, `mpo`, `separable_state`, `evolve!`,
   star-frame free-fermion evolution, occupied-spin lesser analytic value,
   impurity occupation vs exact star evolution, conserved-charge and δt²-convergence
   checks.
+* **Exact dynamics validation** (`scripts/exact_validation.jl`): three independent
+  legs per config — dense mechanical-JW evolution, `DMRG.exact_timeevolution` on
+  our MPO (ExactMPS, lossless), and the sweep-TDVP pipeline. The two exact legs
+  agree to machine precision on every config; the sweep error is quantified
+  against them (zero for finite-β 2-mode single/double-bath configs including
+  U ≠ 0; the vacuum/straddling/double-bath deviations below are the cascade
+  limitation made precise).
 * **G4** (`test/gtempo_crosscheck.jl` + `scripts/`): crosscheck against GTEMPO.
   The GTEMPO-side values are produced by
   `scripts/gtempo_benchmark.jl` (run inside the GTEMPO project) into a CSV that
