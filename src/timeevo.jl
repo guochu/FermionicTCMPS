@@ -14,6 +14,13 @@
 
 const MIND = 10   # minimum bond dimension kept for the projection directions
 
+# Truncation for equivalently expanded initial states: the expansion directions
+# acquire physical weight at O(δt·v) from the first step, so neither the KS MinD
+# crutch nor a large bond cap is needed — discarded (zero-amplitude) directions
+# are simply truncated away. The cap must still admit the expanded bond
+# 1 + 2·(#directions).
+const TRUNC_EXPANDED = truncdimcutoff(D = 10, ϵ = 1.0e-10, add_back = 0)
+
 function _tdvp2(δt::Real, trunc::DMRG.TruncationDimCutoff)
     return TDVP2(stepsize = -im * δt, ishermitian = true, trunc = trunc)
 end

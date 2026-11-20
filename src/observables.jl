@@ -64,7 +64,7 @@ function _shifted_state(x::Union{SISBD,SIDBD}, imp_up::Int, imp_down::Int, spin:
 end
 
 """
-    gf_greater_lesser_t(x, times; imp_up=0, imp_down=0, δt, trunc) -> (gt, lt)
+    gf_greater_lesser_t(x, times; imp_up=0, imp_down=0, δt, trunc, expand=false) -> (gt, lt)
 
 Spin-summed real-time impurity Green's function of the thermo-field state,
 G^>(t) = −i⟨d(t)d†(0)⟩ and G^<(t) = i⟨d†(0)d(t)⟩.
@@ -76,11 +76,21 @@ G^>(t) = −i·e^{iEt}·⟨χ|χ(t)⟩ with χ = d†|ψ₀⟩ and
 G^<(t) = +i·e^{−iEt}·conj⟨η|η(t)⟩ with η = d|ψ₀⟩,
 where E = ⟨ψ₀|H|ψ₀⟩. Spin channels whose insertion annihilates the state contribute
 zero. `times` must be sorted, non-negative and lie on the δt grid.
+
+`expand = true` starts each insertion chain from its EQUIVALENT expansion
+(|χ⟩ ⊕ |φ⟩ ⊕ (−|φ⟩), see `expanded_state`), which makes the far-pair amplitudes
+the sharp state cannot seed (bath modes beyond the sweep window — the whole
+double-bath class, and everything under a truncation without `add_back`)
+first-order in the dynamics. With `expand = true` and no explicit `trunc`, the
+verdict truncation `TRUNC_EXPANDED` (D = 10, add_back = 0) is used.
 """
 function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real};
                              imp_up::Int = 0, imp_down::Int = 0, δt::Real,
-                             trunc::DMRG.TruncationDimCutoff = truncdimcutoff(D = 256, ϵ = 1.0e-10, add_back = MIND))
+                             expand::Bool = false,
+                             trunc::Union{Nothing,DMRG.TruncationDimCutoff} = nothing)
     h = mpo(x)
+    efftrunc = trunc === nothing ? (expand ? TRUNC_EXPANDED :
+                                   truncdimcutoff(D = 256, ϵ = 1.0e-10, add_back = MIND)) : trunc
 
     steps = round.(Int, times ./ δt)
     all(abs(s * δt - t) ≤ 1e-8 * max(1.0, abs(t)) for (s, t) in zip(steps, times)) ||
@@ -88,24 +98,25 @@ function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real
     (issorted(times) && first(times) ≥ 0) || throw(ArgumentError("times must be sorted and non-negative"))
 
     ψ0 = separable_state(x; imp_up, imp_down)
-    E = real(expectationvalue(h, ψ0))   # the fiducial state is an H eigenstate
-    alg = _tdvp2(δt, trunc)
+    E = real(expectationvalue(h, ψ0))
+    alg = _tdvp2(δt, efftrunc)
+    phis_fn = expand ? far_pair_directions(chain_spec(x)) : nothing
 
     chains = NTuple{3,Any}[]            # (state, cache, kind::Symbol)
     greater = NTuple{2,Any}[]           # (chain index, initial state)
     lesser = NTuple{2,Any}[]
     for (spin, nσ) in ((:up, imp_up), (:down, imp_down))
-        χ = _shifted_state(x, imp_up, imp_down, spin, 1)
+        χ = _chain_state(x, imp_up, imp_down, spin, 1, expand, phis_fn)
         if χ !== nothing
             cache = environments(h, χ)
             push!(chains, (χ, cache, :greater))
-            push!(greater, (length(chains), _shifted_state(x, imp_up, imp_down, spin, 1)))
+            push!(greater, (length(chains), _chain_state(x, imp_up, imp_down, spin, 1, expand, phis_fn)))
         end
-        η = _shifted_state(x, imp_up, imp_down, spin, -1)
+        η = _chain_state(x, imp_up, imp_down, spin, -1, expand, phis_fn)
         if η !== nothing
             cache = environments(h, η)
             push!(chains, (η, cache, :lesser))
-            push!(lesser, (length(chains), _shifted_state(x, imp_up, imp_down, spin, -1)))
+            push!(lesser, (length(chains), _chain_state(x, imp_up, imp_down, spin, -1, expand, phis_fn)))
         end
     end
 
@@ -129,4 +140,18 @@ function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real
         end
     end
     return gt, lt
+end
+
+"insertion chain, plain or equivalently expanded (φ directions need occs0)"
+function _chain_state(x::Union{SISBD,SIDBD}, imp_up::Int, imp_down::Int,
+                      spin::Symbol, delta::Int, expand::Bool, phis_fn)
+    if !expand
+        return _shifted_state(x, imp_up, imp_down, spin, delta)
+    end
+    spec = chain_spec(x)
+    q_out = spin === :up ? (imp_up + delta, imp_down) : (imp_up, imp_down + delta)
+    ((0 <= q_out[1] <= 1) && (0 <= q_out[2] <= 1)) || return nothing
+    occs0 = ntuple(i -> i == spec.imp_site ? q_out :
+                   (spec.kinds[i] === :hole ? (1, 1) : (0, 0)), length(spec.kinds))
+    return expanded_shifted_state(x, imp_up, imp_down, spin, delta, phis_fn(occs0))
 end

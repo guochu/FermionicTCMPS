@@ -20,6 +20,12 @@
 # Metrics: baseline vs expanded sweep error Δgt/Δlt against the dense exact leg,
 # plus a δt scan on config C to expose the convergence order.
 #
+# Verdict configuration (user): with the expansion the truncation needs neither
+# the KS MinD crutch nor a large bond dimension — add_back = 0 and D = 10 (the
+# cap must still admit the expanded bond 1 + 2·#directions). Each config runs
+# three sweep legs: baseline (old trunc D=256, add_back=10), baseline with the
+# verdict truncation, and expanded with the verdict truncation.
+#
 #   julia --project=. scripts/diag_expansion.jl
 # ==============================================================================
 
@@ -30,6 +36,9 @@ using FermionicTCMPS: _sector, _add, _amplitude, _adag_up, _adag_down, _a_up, _a
 
 include(joinpath(@__DIR__, "..", "test", "anchor_util.jl"))
 include(joinpath(@__DIR__, "exact_validation.jl"))   # dense helpers, δt, TIMES, TRUNC
+
+# the verdict truncation for the expansion route: no MinD crutch, small bond cap
+const TRUNC_EXP = truncdimcutoff(D = 10, ϵ = 1.0e-10, add_back = 0)
 
 # ---------------- equivalent expansion construction ----------------
 
@@ -299,14 +308,18 @@ function run_big_config(name, x, couples, times; δt, imp_up = 0, imp_down = 0)
     gt_ref = _et_gt(x, times; imp_up, imp_down)
     gt_base, lt_base = gf_sweep_expanded(x, times; imp_up, imp_down, δt,
                                          trunc = TRUNC, expand = false)
+    gt_small, lt_small = gf_sweep_expanded(x, times; imp_up, imp_down, δt,
+                                           trunc = TRUNC_EXP, expand = false)
     gt_exp, lt_exp = gf_sweep_expanded(x, times; imp_up, imp_down, δt,
-                                       trunc = TRUNC, expand = true, phis_fn)
+                                       trunc = TRUNC_EXP, expand = true, phis_fn)
     fmt(v) = round(v, digits = 6)
     println("== ", name, "  (imp = ", (imp_up, imp_down), ") ==")
     println("   |gt| ET at (0.1, 1.0): ", fmt(abs(gt_ref[2])), " / ", fmt(abs(gt_ref[end])))
-    println("   baseline: Δgt(vs ET) = ", fmt(maximum(abs.(gt_base - gt_ref))),
+    println("   baseline (D=256, add_back=10): Δgt(vs ET) = ", fmt(maximum(abs.(gt_base - gt_ref))),
             "   Δlt = ", fmt(maximum(abs.(lt_base))))
-    println("   expanded: Δgt(vs ET) = ", fmt(maximum(abs.(gt_exp - gt_ref))),
+    println("   baseline (D=10,  add_back=0):  Δgt(vs ET) = ", fmt(maximum(abs.(gt_small - gt_ref))),
+            "   Δlt = ", fmt(maximum(abs.(lt_small))))
+    println("   expanded (D=10,  add_back=0):  Δgt(vs ET) = ", fmt(maximum(abs.(gt_exp - gt_ref))),
             "   Δlt = ", fmt(maximum(abs.(lt_exp))))
     return nothing
 end
@@ -336,15 +349,19 @@ function run_exp_config(name, x, couples, L; εd, U, imp_up = 0, imp_down = 0)
                 for (i, t) in enumerate(TIMES)]
 
     gt_base, lt_base = gf_sweep_expanded(x, TIMES; imp_up, imp_down, δt, trunc = TRUNC, expand = false, H)
-    gt_exp, lt_exp = gf_sweep_expanded(x, TIMES; imp_up, imp_down, δt, trunc = TRUNC, expand = true, H)
+    gt_small, lt_small = gf_sweep_expanded(x, TIMES; imp_up, imp_down, δt, trunc = TRUNC_EXP, expand = false, H)
+    gt_exp, lt_exp = gf_sweep_expanded(x, TIMES; imp_up, imp_down, δt, trunc = TRUNC_EXP, expand = true, H)
 
     fmt(v) = round(v, digits = 6)
     Δgt_b = maximum(abs.(gt_base - gt_exact)); Δgt_e = maximum(abs.(gt_exp - gt_exact))
     Δlt_b = maximum(abs.(lt_base - lt_exact)); Δlt_e = maximum(abs.(lt_exp - lt_exact))
+    Δgt_s = maximum(abs.(gt_small - gt_exact)); Δlt_s = maximum(abs.(lt_small - lt_exact))
     println("== ", name, "  (imp = ", (imp_up, imp_down), ") ==")
-    println("   baseline: Δgt = ", fmt(Δgt_b), "   Δlt = ", fmt(Δlt_b))
-    println("   expanded: Δgt = ", fmt(Δgt_e), "   Δlt = ", fmt(Δlt_e))
-    return (Δgt_base = Δgt_b, Δgt_exp = Δgt_e, Δlt_base = Δlt_b, Δlt_exp = Δlt_e)
+    println("   baseline (D=256, add_back=10): Δgt = ", fmt(Δgt_b), "   Δlt = ", fmt(Δlt_b))
+    println("   baseline (D=10,  add_back=0):  Δgt = ", fmt(Δgt_s), "   Δlt = ", fmt(Δlt_s))
+    println("   expanded (D=10,  add_back=0):  Δgt = ", fmt(Δgt_e), "   Δlt = ", fmt(Δlt_e))
+    return (Δgt_base = Δgt_b, Δgt_exp = Δgt_e, Δlt_base = Δlt_b, Δlt_exp = Δlt_e,
+            gt_exact = gt_exact, lt_exact = lt_exact, H = H)
 end
 
 function main()
@@ -405,9 +422,18 @@ function main()
     # F. vacuum above μ, hot impurity
     x = SISBD(discretefermionicvacuum(wsc, fsc; μ = 0.0); U = 1.7, εd = 0.2, J = 1.0)
     _, v1f, v2f = FermionicTCMPS.thermofield_couplings(x.bath)
-    run_exp_config("F single 2mode vacuum-above U=1.7 hot imp", x,
+    resf = run_exp_config("F single 2mode vacuum-above U=1.7 hot imp", x,
         [(2k, 2k + 1, wsc[k], x.J * v1f[k], x.J * v2f[k]) for k in eachindex(wsc)], 5;
         εd = 0.2, U = 1.7, imp_up = 1)
+    # F expanded-leg truncation attribution: which of the cap D and add_back hurts?
+    println("   F expanded-leg truncation probe (Δgt vs dense exact):")
+    for (D, ab) in ((10, 0), (10, 10), (256, 0), (256, 10))
+        gtp, = gf_sweep_expanded(x, TIMES; imp_up = 1, imp_down = 0, δt,
+                                 trunc = truncdimcutoff(D = D, ϵ = 1e-10, add_back = ab),
+                                 expand = true, H = resf.H)
+        println("      D=$D add_back=$ab: Δgt = ",
+                round(maximum(abs.(gtp - resf.gt_exact)); digits = 6))
+    end
 
     # G. double bath finite β, hot impurity
     x = SIDBD(xl, xr; U = 1.7, εd = -0.3, Jl = 1.0, Jr = 1.0)
@@ -437,12 +463,13 @@ function main()
     for dt in (0.04, 0.02, 0.01)
         gt_base, lt_base = gf_sweep_expanded(xg, TIMES; imp_up = 1, imp_down = 0,
                                              δt = dt, trunc = TRUNC, expand = false, H = Hd)
+        gt_small, lt_small = gf_sweep_expanded(xg, TIMES; imp_up = 1, imp_down = 0,
+                                               δt = dt, trunc = TRUNC_EXP, expand = false, H = Hd)
         gt_exp, lt_exp = gf_sweep_expanded(xg, TIMES; imp_up = 1, imp_down = 0,
-                                           δt = dt, trunc = TRUNC, expand = true, H = Hd)
-        println("   δt = $dt:  baseline Δgt = ", round(maximum(abs.(gt_base - gt_exact)); digits = 6),
-                "  Δlt = ", round(maximum(abs.(lt_base - lt_exact)); digits = 6),
-                "   |   expanded Δgt = ", round(maximum(abs.(gt_exp - gt_exact)); digits = 6),
-                "  Δlt = ", round(maximum(abs.(lt_exp - lt_exact)); digits = 6))
+                                           δt = dt, trunc = TRUNC_EXP, expand = true, H = Hd)
+        println("   δt = $dt:  baseline(D=256,ab=10) Δgt = ", round(maximum(abs.(gt_base - gt_exact)); digits = 6),
+                "  baseline(D=10,ab=0) Δgt = ", round(maximum(abs.(gt_small - gt_exact)); digits = 6),
+                "  expanded(D=10,ab=0) Δgt = ", round(maximum(abs.(gt_exp - gt_exact)); digits = 6))
     end
 
     # part 2: larger baths — the benchmark/GTEMPO-crosscheck regime. The dense leg
