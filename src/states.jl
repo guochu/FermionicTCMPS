@@ -127,7 +127,21 @@ function expanded_state(spec::ChainSpec, occs0, phis; base_vals = nothing, T::Ty
         end
         Ws[i] = W
     end
-    return MPS(Vector{typeof(Ws[1])}(Ws))
+    ψ = MPS(Vector{typeof(Ws[1])}(Ws))
+    return _right_canonicalize!(ψ)
+end
+
+# Bring sites 2..L to right-canonical form (QR-based, so the exactly-zero-weight
+# redundancy channels survive — an SVD truncation would drop them); site 1
+# carries the leftover norms, which is the mixed form the sweep expects as
+# input. The bond dimensions are untouched.
+function _right_canonicalize!(ψ::DMRG.MPS)
+    for i in length(ψ):-1:2
+        v, Q = DMRG.rightorth(ψ[i], (1,), (2, 3); alg = LQ())
+        ψ[i] = permute(Q, (1, 2), (3,))
+        ψ[i - 1] = ψ[i - 1] * v
+    end
+    return ψ
 end
 
 """
