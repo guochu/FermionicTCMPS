@@ -1,4 +1,4 @@
-using LinearAlgebra: diagm, kron, I
+using LinearAlgebra: diagm, kron, I, eigen, Hermitian, dot
 using FermionicTCMPS: _sector
 
 # ==============================================================================
@@ -38,12 +38,14 @@ _kron3(a, b, c) = kron(kron(a, b), c)
     dense_hamiltonian(kinds, couples; εd, U) -> Matrix
 
 Mechanical JW assembly of the thermo-field chain Hamiltonian in the 4ᴸ-dimensional
-particle basis. `kinds[i]` ∈ (:imp, :particle, :hole) and `couples` is a
-`Vector{Tuple{Int,Float64,Float64}}` of per bath mode `(site, v1, v2)`.
-Site ordering is the documented one (site-major, up-first within a site).
+particle basis. `kinds[i]` ∈ (:imp, :particle) and `couples` is a per-mode
+`(s1, s2, ω, v1, v2, n)` tuple: weighted on-sites ω(1−n) at s1 and ω·n at s2,
+impurity hoppings v1/v2, and the intra-mode pairing g = ω√(n(1−n)) between the
+adjacent pair. Site ordering is the documented one (site-major, up-first within
+a site).
 """
 function dense_hamiltonian(kinds::Vector{Symbol}, imp::Int,
-                           couples::Vector{Tuple{Int,Int,Float64,Float64,Float64}};
+                           couples::Vector{Tuple{Int,Int,Float64,Float64,Float64,Float64}};
                            εd::Float64 = 0.0, U::Float64 = 0.0)
     L = length(kinds)
     prefixes = Vector{Any}(undef, L + 1)
@@ -51,7 +53,6 @@ function dense_hamiltonian(kinds::Vector{Symbol}, imp::Int,
     for s in 1:L
         prefixes[s+1] = kron(prefixes[s], _LOC.par)
     end
-    sitename(M, s) = _kron3(prefixes[s], M, _suffix_id(L - s))
 
     dim = 4^L
     H = zeros(dim, dim)
@@ -63,32 +64,34 @@ function dense_hamiltonian(kinds::Vector{Symbol}, imp::Int,
     sitename_bare(M, s) = _kron3(_suffix_id(s - 1), M, _suffix_id(L - s))
     H .+= εd .* (sitename_bare(_LOC.nup, imp) .+ sitename_bare(_LOC.ndn, imp))
     (U != 0.0) && (H .+= U .* sitename_bare(_LOC.nn, imp))
-    # chain annihilation operators for the hopping terms
+    # chain annihilation operators for the hopping/pairing terms
     imp_ops = (_kron3(prefixes[imp], _LOC.cup, _suffix_id(L - imp)),
                _kron3(prefixes[imp], _LOC.cdn, _suffix_id(L - imp)))
-    for (s1, s2, ω, v1, v2) in couples
-        # number operators must be assembled as C†C so the JW parity cancels
+    for (s1, s2, ω, v1, v2, n) in couples
+        # number operators must be assembled as C†C so the JW parity cancels;
+        # the pairing c₁†c₂ as a raw product of JW-dressed operators carries the
+        # string P_{s1} automatically (Prefix²  = 1 algebra)
         ops1 = (_kron3(prefixes[s1], _LOC.cup, _suffix_id(L - s1)),
                 _kron3(prefixes[s1], _LOC.cdn, _suffix_id(L - s1)))
-        ops2 = (_kron3(prefixes[s2], _LOC.bup, _suffix_id(L - s2)),
-                _kron3(prefixes[s2], _LOC.bdn, _suffix_id(L - s2)))
-        H .+= ω .* (ops1[1]' * ops1[1] .+ ops1[2]' * ops1[2])   # a₁: ω(n↑+n↓)
-        H .+= ω .* (ops2[1]' * ops2[1] .+ ops2[2]' * ops2[2])   # a₂: ω(n_h↑+n_h↓)
+        ops2 = (_kron3(prefixes[s2], _LOC.cup, _suffix_id(L - s2)),
+                _kron3(prefixes[s2], _LOC.cdn, _suffix_id(L - s2)))
+        H .+= ω * (1 - n) .* (ops1[1]' * ops1[1] .+ ops1[2]' * ops1[2])   # a₁: ω(1−n)(n↑+n↓)
+        H .+= ω * n .* (ops2[1]' * ops2[1] .+ ops2[2]' * ops2[2])         # a₂: ω·n(n↑+n↓)
+        g = ω * sqrt(n * (1 - n))
         for σ in 1:2
             H .+= v1 .* (imp_ops[σ]' * ops1[σ] .+ ops1[σ]' * imp_ops[σ])
             H .+= v2 .* (imp_ops[σ]' * ops2[σ] .+ ops2[σ]' * imp_ops[σ])
+            iszero(g) || (t1 = ops1[σ]' * ops2[σ]; H .+= g .* (t1 .+ t1'))
         end
     end
     return H
 end
 
 # ---------- MPO-side element extraction ----------
-# particle occupation tuple (n↑, n↓) per site -> prodmps sector (hole sites relabeled)
+# particle occupation tuple (n↑, n↓) per site -> prodmps sector
 function _basis_state(spec, occs; T = Float64)
     occs = collect(occs)
-    sectors = [_sector(k == spec.imp_site ? occs[k] :
-                       (spec.kinds[k] === :hole ? (1 - occs[k][1], 1 - occs[k][2]) : occs[k]))
-               for k in 1:length(spec.kinds)]
+    sectors = [_sector(occs[k]) for k in 1:length(spec.kinds)]
     return prodmps(T, spec.spaces, sectors)
 end
 
@@ -97,8 +100,8 @@ function _mpo_elements(x, H_dense, states)
     h = mpo(x)
     cache = Dict{Any,Any}()
     state_mps(v) = get!(cache, v) do; _basis_state(spec, v); end
-    # H conserves (particles at particle sites + holes at hole sites) per spin:
-    # only pairs with equal conserved charges contract
+    # H conserves the total particle number per spin: only pairs with equal
+    # conserved charges contract
     err = 0.0
     for (v, w) in states
         _qtotal(spec, v) == _qtotal(spec, w) || continue
@@ -113,15 +116,87 @@ end
 function _qtotal(spec, occs)
     q1 = q2 = 0
     for k in 1:length(occs)
-        if spec.kinds[k] === :hole
-            q1 += 1 - occs[k][1]
-            q2 += 1 - occs[k][2]
-        else
-            q1 += occs[k][1]
-            q2 += occs[k][2]
-        end
+        q1 += occs[k][1]
+        q2 += occs[k][2]
     end
     return (q1, q2)
+end
+
+# ---------- dense fiducial + exact Green's functions ----------
+
+"occupation tuple of a flat basis index (site 1 most significant, up-first)"
+_occ_of(L, idx) = ntuple(s -> begin
+    d = (idx - 1) ÷ 4^(L - s) % 4
+    (d == 1 || d == 3 ? 1 : 0, d >= 2 ? 1 : 0)
+end, L)
+
+"""
+    dense_tfd_vector(spec, modes, imp_occs; T=ComplexF64)
+
+Dense 4ᴸ vector of the thermofield-double fiducial state: impurity occupations
+`imp_occs` and, per mode `(s1, s2, n)` in chain order, the doubles
+⊗_σ(√(1−n)|0 0⟩ + √n|1 1⟩) on the interleaved pair.
+"""
+function dense_tfd_vector(spec, modes, imp_occs; T = ComplexF64)
+    L = length(spec.kinds)
+    imp = spec.imp_site
+    ψ = zeros(T, 4^L)
+    for idx in 1:4^L
+        occs = _occ_of(L, idx)
+        occs[imp] == imp_occs || continue
+        amp = 1.0
+        for (s1, s2, n) in modes
+            for σ in 1:2
+                occs[s1][σ] == occs[s2][σ] || (amp = 0.0; break)
+                amp *= (occs[s1][σ] == 0 ? sqrt(1 - n) : sqrt(n))
+            end
+            iszero(amp) && break
+        end
+        ψ[idx] = amp
+    end
+    return ψ
+end
+
+"""
+    dense_gf_sandwich(H, ψ0, imp, times; imp_up=0, imp_down=0) -> (gt, lt)
+
+Exact spin-summed impurity greater/lesser GF of the chain-frame state `ψ0` under
+the dense H (the sandwich estimator of `gf_greater_lesser_t`, evaluated exactly):
+G^>(t) = −i⟨ψ(t)|d_σ|χ(t)⟩ with χ = d†|ψ₀⟩, G^<(t) = i⟨η(t)|d_σ|ψ(t)⟩ with
+η = d|ψ₀⟩.
+"""
+function dense_gf_sandwich(H, ψ0, imp, times; imp_up = 0, imp_down = 0)
+    L = round(Int, log(4, size(H, 1)))
+    prefixes = Vector{Any}(undef, L + 1)
+    prefixes[1] = ones(1, 1)
+    for s in 1:L
+        prefixes[s+1] = kron(prefixes[s], _LOC.par)
+    end
+    F = eigen(Hermitian(H))
+    g0 = F.vectors' * ψ0
+    gt = zeros(ComplexF64, length(times))
+    lt = zeros(ComplexF64, length(times))
+    for (spin, occ) in ((:up, imp_up), (:down, imp_down))
+        cup = spin === :up ? _LOC.cup : _LOC.cdn
+        ann = _kron3(prefixes[imp], cup, _suffix_id(L - imp))
+        χ = ann' * ψ0
+        η = ann * ψ0
+        χg = iszero(χ) ? nothing : F.vectors' * χ
+        ηg = iszero(η) ? nothing : F.vectors' * η
+        for (j, t) in enumerate(times)
+            ph = exp.(-im .* F.values .* t)
+            ψt = F.vectors * (ph .* g0)
+            if χg !== nothing
+                χt = F.vectors * (ph .* χg)
+                gt[j] += -im * dot(ψt, ann * χt)
+            end
+            if ηg !== nothing
+                ηt = F.vectors * (ph .* ηg)
+                lt[j] += im * dot(ηt, ann * ψt)
+            end
+        end
+    end
+    return gt, lt
 end
 
 # flat index of a particle-occupation basis vector — kron convention (site 1 is the

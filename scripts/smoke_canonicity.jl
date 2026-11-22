@@ -17,8 +17,7 @@ function check(name, x, phis_fn)
         χ = FermionicTCMPS._shifted_state(x, 0, 0, spin, delta)
         χ === nothing && continue
         q_out = spin === :up ? (1, 0) : (0, 1)
-        occs0 = ntuple(i -> i == imp ? q_out :
-                       (spec.kinds[i] === :hole ? (1, 1) : (0, 0)), L)
+        occs0 = ntuple(i -> i == imp ? q_out : (0, 0), L)
         exp = FermionicTCMPS.expanded_shifted_state(x, 0, 0, spin, delta, phis_fn(occs0))
         canon = all(DMRG.isrightcanonical, exp.data[2:end])
         d0 = abs(dot(χ, exp) - 1.0)
@@ -39,8 +38,7 @@ function bond_dims(name, x)
     spec = FermionicTCMPS.chain_spec(x)
     imp = spec.imp_site
     L = length(spec.kinds)
-    occs0 = ntuple(i -> i == imp ? (1, 0) :
-                   (spec.kinds[i] === :hole ? (1, 1) : (0, 0)), L)
+    occs0 = ntuple(i -> i == imp ? (1, 0) : (0, 0), L)
     phis = FermionicTCMPS.far_pair_directions(spec)(occs0)
     println(name, ": directions = ", length(phis), "  interior bond dim = ", 1 + 2 * length(phis),
             "  (boundary bonds = 1)")

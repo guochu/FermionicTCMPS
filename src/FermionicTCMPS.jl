@@ -1,12 +1,14 @@
 module FermionicTCMPS
 
 using TensorKit
+import TensorKit: dot
+import DMRG: environments, sweep!, expectationvalue
 using DMRG
 using ImpurityModelBase
 using ImpurityModelBase: Fermion, Bath, Vacuum, DiscreteSpectrum,
                          frequencies, spectrumvalues, spectrumcouplings, fermidirac
 
-export SISBD, SIDBD, mpo, separable_state, evolve!
+export SISBD, SIDBD, mpo, fiducial_state, evolve!
 export occupation_op, current_op, gf_greater_lesser_t
 
 include("siteops.jl")

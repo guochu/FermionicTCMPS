@@ -105,7 +105,7 @@ function _site_tensor(spec::ChainSpec, k::Int, row_ch::Vector{FSMChannel}, col_c
     mat[1, 1] = one(T)
     mat[nr, nc] = one(T)
     ps = spec.spaces[k]
-    par = (spec.kinds[k] === :hole) ? _hole_parity : _parity
+    par = _parity
     if onsite && !isempty(spec.onsite[k])
         mat[1, nc] = entry_tensor(T, SLOT_CLOSED, SLOT_FINAL, ps, spec.onsite[k])
     end

@@ -19,15 +19,16 @@ end
     current_op(x::Union{SISBD,SIDBD}; spin=:both)
 
 MPO of the impurity→bath current operator J = Σ_j V'_j c_j† d, summed over the
-thermo-field branches (the particle–hole representation turns the a₂ branch into
-ordinary h.c.-type hoppings). `spin` selects one spin contribution.
+thermo-field branches (both branches carry number-conserving hoppings with the
+thermo-field weights). `spin` selects one spin contribution.
 The physical current is J(t) = 2·Im⟨J⟩(t).
 """
 function current_op(x::Union{SISBD,SIDBD}; spin::Symbol = :both)
     spec = chain_spec(x)
     selected = filter(spec.channels) do c
         spinok = spin === :both || (spin === :up && c.name === :up_hc) || (spin === :down && c.name === :down_hc)
-        spinok && endswith(String(c.name), "_hc")
+        spinok && endswith(String(c.name), "_hc") &&
+            any(e.site == spec.imp_site for e in (c.opens..., c.closes...))
     end
     isempty(selected) && throw(ArgumentError("no current channels selected for spin = $spin"))
     return _fsm_mpo(spec, selected; onsite = false)
@@ -42,9 +43,10 @@ end
 """
     _shifted_state(x, imp_up, imp_down, spin, delta)
 
-Impurity insertion d^delta_σ |imp⟩ as a product MPS (bond dimensions unchanged,
-total charge shifted), with the intra-site phase taken from the operator table.
-Returns `nothing` when the insertion annihilates the state.
+Impurity insertion d^delta_σ |imp⟩ as a product MPS of the vacuum-fiducial chain
+(bond dimensions unchanged, total charge shifted), with the intra-site phase
+taken from the operator table. Returns `nothing` when the insertion annihilates
+the state.
 """
 function _shifted_state(x::Union{SISBD,SIDBD}, imp_up::Int, imp_down::Int, spin::Symbol, delta::Int)
     q_in = (imp_up, imp_down)
@@ -63,26 +65,90 @@ function _shifted_state(x::Union{SISBD,SIDBD}, imp_up::Int, imp_down::Int, spin:
     return _widen_svectors(ψ)
 end
 
+# ⟨A|h|B⟩ with h carrying a BRIDGING charge (site_operator_mpo insertions): the
+# generic DMRG.expectation boundary is a loose isometry over the full sector set
+# and cannot pair (B-final ⊗ h-final) → A-final when only the operator-slot
+# sector matches, so build the right boundary explicitly over the charge-conserving
+# block and sweep with the stock updateright.
+# ⟨ψ|d_σ|χ⟩ evaluated as ⟨d†ψ|χ⟩: apply the impurity creation mechanically to the
+# ket (impurity tensor rebuilt, every downstream bond sector shifted by the operator
+# charge — all blocks are 1×1 so the re-keying is exact), then a same-charge dot.
+# This sidesteps the bridging-charge three-way contraction, which neither the
+# generic DMRG expectation boundary nor a hand-rolled one represents as a valid
+# graded tensor.
+function _apply_dag(x::Union{SISBD,SIDBD}, ψ::DMRG.MPS, spin::Symbol, delta::Int;
+                    imp_up::Int = 0, imp_down::Int = 0)
+    spec = chain_spec(x)
+    imp = spec.imp_site
+    lookup = Dict(_sector((q1, q2)) => (q1, q2) for q1 in 0:(2length(spec.kinds)) for q2 in 0:(2length(spec.kinds)))
+    q_in = (imp_up, imp_down)
+    q_out = spin === :up ? (q_in[1] + delta, q_in[2]) : (q_in[1], q_in[2] + delta)
+    tbl = spin === :up ? (delta == 1 ? _adag_up : _a_up) : (delta == 1 ? _adag_down : _a_down)
+    amp = _amplitude(tbl, q_out, q_in)
+    amp === nothing && error("insertion annihilates the state")
+    q_d = q_out .- q_in
+    # strip the canonical-form bond tensors: the shifted data must not inherit
+    # the unshifted .s chain
+    B = DMRG.MPSBondTensor{spacetype(ψ[1])}
+    sv = Vector{Union{Missing,B}}(missing, length(ψ))
+    φ = DMRG.MPS(deepcopy(ψ.data), sv)
+    for k in imp:length(ψ)
+        T = φ[k]
+        lft = _shifted_space(space(T, 1), k > imp ? q_d : (0, 0), lookup)
+        rgt = _shifted_space(space(T, 3), q_d, lookup)
+        T2 = zeros(ComplexF64, lft ⊗ space(T, 2) ← rgt)
+        # the shift is a block-level bijection (bond and phys labels translate
+        # uniformly, so the canonical within-block order is preserved): copy
+        # each block wholesale to its re-keyed position
+        for (s, blk) in blocks(T)
+            # uniform +q_d on the fused charge: the impurity flips q_in→q_out
+            # (net +q_d on bond+phys), downstream sites shift both bonds (+q_d)
+            # while their phys labels stay — the fused total translates by +q_d
+            c = _sector(_charge_of(s, lookup) .+ q_d)
+            dstblk = block(T2, c)
+            size(dstblk) == size(blk) || continue
+            copyto!(dstblk, blk)
+        end
+        (k == imp) && (φ[k] = T2; φ[k] = amp * T2; continue)
+        φ[k] = T2
+    end
+    return φ
+end
+
+"sector label → charge (tree labels may or may not be stored dualized)"
+_charge_of(s, lookup) = haskey(lookup, s) ? lookup[s] : lookup[conj(s)]
+
+"bond space with every sector shifted by q"
+function _shifted_space(sp, q::Charge, lookup)
+    elems = Pair{eltype(sp),Int}[]
+    for s in sectors(sp)
+        c = _charge_of(s, lookup) .+ q
+        push!(elems, _sector(c) => dim(sp, s))
+    end
+    isempty(elems) && return oneunit(Rep[U₁×U₁])
+    return foldl(⊕, (Rep[U₁×U₁](e) for e in elems))
+end
+
 """
     gf_greater_lesser_t(x, times; imp_up=0, imp_down=0, δt, trunc, expand=false) -> (gt, lt)
 
 Spin-summed real-time impurity Green's function of the thermo-field state,
 G^>(t) = −i⟨d(t)d†(0)⟩ and G^<(t) = i⟨d†(0)d(t)⟩.
 
-The separable TFD state is an eigenstate of the chain Hamiltonian (every hopping
-term annihilates the fiducial bath), so the correlators reduce to same-charge
-overlaps of freely evolved insertion chains,
-G^>(t) = −i·e^{iEt}·⟨χ|χ(t)⟩ with χ = d†|ψ₀⟩ and
-G^<(t) = +i·e^{−iEt}·conj⟨η|η(t)⟩ with η = d|ψ₀⟩,
-where E = ⟨ψ₀|H|ψ₀⟩. Spin channels whose insertion annihilates the state contribute
-zero. `times` must be sorted, non-negative and lie on the δt grid.
+With the thermofield-double fiducial the chain state is NOT a Hamiltonian
+eigenstate (the branch hoppings act on the doubles), so the correlators are
+sampled as sandwiches of forward-evolved states:
+G^>(t) = −i·⟨ψ(t)| d_σ |χ(t)⟩ with χ = d†|ψ₀⟩ and
+G^<(t) = +i·⟨η(t)| d_σ |ψ(t)⟩ with η = d|ψ₀⟩,
+evolved in lockstep. Spin channels whose insertion annihilates the state
+contribute zero. `times` must be sorted, non-negative and lie on the δt grid.
 
-`expand = true` starts each insertion chain from its EQUIVALENT expansion
-(|χ⟩ ⊕ |φ⟩ ⊕ (−|φ⟩), see `expanded_state`), which makes the far-pair amplitudes
-the sharp state cannot seed (bath modes beyond the sweep window — the whole
-double-bath class, and everything under a truncation without `add_back`)
-first-order in the dynamics. With `expand = true` and no explicit `trunc`, the
-verdict truncation `TRUNC_EXPANDED` (D = 10, add_back = 0) is used.
+`expand = true` (VACUUM baths only) starts every chain from its EQUIVALENT
+expansion (|χ⟩ ⊕ |φ⟩ ⊕ (−|φ⟩), see `expanded_state`), which makes the far-pair
+amplitudes the sharp state cannot seed (bath modes beyond the sweep window)
+first-order in the dynamics; the truncation then defaults to `TRUNC_EXPANDED`.
+For finite-temperature baths the fiducial is the thermofield-double
+superposition and the expansion machinery does not apply.
 """
 function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real};
                              imp_up::Int = 0, imp_down::Int = 0, δt::Real,
@@ -97,26 +163,34 @@ function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real
         throw(ArgumentError("times must lie on the δt grid"))
     (issorted(times) && first(times) ≥ 0) || throw(ArgumentError("times must be sorted and non-negative"))
 
-    ψ0 = separable_state(x; imp_up, imp_down)
-    E = real(expectationvalue(h, ψ0))
-    alg = _tdvp2(δt, efftrunc)
-    phis_fn = expand ? far_pair_directions(chain_spec(x)) : nothing
+    spec = chain_spec(x)
+    # the expansion presupposes the SHARP product fiducial: every mode in a
+    # saturated occupation (the T=0 filled sea, n ∈ {0,1}) qualifies
+    hot = any(n -> !(iszero(n) || isone(n)), (n for (i, j, n) in _mode_pairs(x)))
+    expand && hot && throw(ArgumentError("the equivalent expansion applies to saturated-occupation (T = 0) baths only"))
 
-    chains = NTuple{3,Any}[]            # (state, cache, kind::Symbol)
-    greater = NTuple{2,Any}[]           # (chain index, initial state)
-    lesser = NTuple{2,Any}[]
-    for (spin, nσ) in ((:up, imp_up), (:down, imp_down))
-        χ = _chain_state(x, imp_up, imp_down, spin, 1, expand, phis_fn)
+    ψ = expand ? _expanded_sectorstate(x, imp_up, imp_down) : fiducial_state(x; imp_up, imp_down)
+    alg = _tdvp2(δt, efftrunc)
+    dmpo = Dict(:up => site_operator_mpo(spec.spaces, spec.imp_site, _a_up),
+                :down => site_operator_mpo(spec.spaces, spec.imp_site, _a_down))
+
+    ψcaches = [environments(h, c) for c in ψ.comps]   # sweep! mutates ψ.comps in place
+    inserts = NamedTuple{(:kind, :weights, :comps, :caches, :sign, :spin, :qeta),
+                         Tuple{Symbol,Any,Any,Any,Float64,Symbol,Any}}[]
+    for spin in (:up, :down)
+        χ = _inserted_state(x, spin, 1; ψ, imp_up, imp_down, expand)
         if χ !== nothing
-            cache = environments(h, χ)
-            push!(chains, (χ, cache, :greater))
-            push!(greater, (length(chains), _chain_state(x, imp_up, imp_down, spin, 1, expand, phis_fn)))
+            push!(inserts, (kind = :gt, weights = χ.weights, comps = χ.comps,
+                            caches = [environments(h, c) for c in χ.comps],
+                            sign = χ.phase * ψ.phase, spin = spin, qeta = (imp_up, imp_down)))
         end
-        η = _chain_state(x, imp_up, imp_down, spin, -1, expand, phis_fn)
+        η = _inserted_state(x, spin, -1; ψ, imp_up, imp_down, expand)
         if η !== nothing
-            cache = environments(h, η)
-            push!(chains, (η, cache, :lesser))
-            push!(lesser, (length(chains), _chain_state(x, imp_up, imp_down, spin, -1, expand, phis_fn)))
+            # η's impurity occupations are the annihilated ones
+            qeta = spin === :up ? (imp_up - 1, imp_down) : (imp_up, imp_down - 1)
+            push!(inserts, (kind = :lt, weights = η.weights, comps = η.comps,
+                            caches = [environments(h, c) for c in η.comps],
+                            sign = η.phase * ψ.phase, spin = spin, qeta = qeta))
         end
     end
 
@@ -125,33 +199,62 @@ function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real
     prev = 0
     for (i, n) in enumerate(steps)
         for _ in (prev + 1):n
-            foreach(c -> sweep!(c[2], alg), chains)
+            foreach(c -> sweep!(c, alg), ψcaches)
+            foreach(ins -> foreach(c -> sweep!(c, alg), ins.caches), inserts)
         end
         prev = n
-        gtphase = -im * exp(im * E * times[i])
-        ltphase = im * exp(-im * E * times[i])
-        for (cid, χ0) in greater
-            state = chains[cid][1]
-            gt[i] += gtphase * dot(χ0, state)
-        end
-        for (cid, η0) in lesser
-            state = chains[cid][1]
-            lt[i] += ltphase * conj(dot(η0, state))
+        ψt = [c.state for c in ψcaches]
+        for ins in inserts
+            χt = [c.state for c in ins.caches]
+            # ⟨ψ|d|χ⟩ = ⟨d†ψ|χ⟩ — same-charge overlaps of mechanically shifted states
+            if ins.kind === :gt
+                acc = sum(w * dot(_apply_dag(x, ψt[j], ins.spin, 1; imp_up, imp_down), χt[j])
+                          for (j, w) in enumerate(ins.weights))
+                gt[i] += -im * ins.sign * acc
+            else
+                acc = sum(w * dot(_apply_dag(x, χt[j], ins.spin, 1;
+                                              imp_up = ins.qeta[1], imp_down = ins.qeta[2]), ψt[j])
+                          for (j, w) in enumerate(ins.weights))
+                lt[i] += im * ins.sign * acc
+            end
         end
     end
     return gt, lt
 end
 
-"insertion chain, plain or equivalently expanded (φ directions need occs0)"
-function _chain_state(x::Union{SISBD,SIDBD}, imp_up::Int, imp_down::Int,
-                      spin::Symbol, delta::Int, expand::Bool, phis_fn)
-    if !expand
-        return _shifted_state(x, imp_up, imp_down, spin, delta)
-    end
-    spec = chain_spec(x)
-    q_out = spin === :up ? (imp_up + delta, imp_down) : (imp_up, imp_down + delta)
+"insertion d^delta_σ|ψ₀⟩ of the fiducial state; nothing when the insertion annihilates it"
+function _inserted_state(x::Union{SISBD,SIDBD}, spin::Symbol, delta::Int;
+                         ψ::SectorSumState, imp_up::Int = 0, imp_down::Int = 0,
+                         expand::Bool = false)
+    q_in = (imp_up, imp_down)
+    q_out = spin === :up ? (q_in[1] + delta, q_in[2]) : (q_in[1], q_in[2] + delta)
     ((0 <= q_out[1] <= 1) && (0 <= q_out[2] <= 1)) || return nothing
-    occs0 = ntuple(i -> i == spec.imp_site ? q_out :
-                   (spec.kinds[i] === :hole ? (1, 1) : (0, 0)), length(spec.kinds))
-    return expanded_shifted_state(x, imp_up, imp_down, spin, delta, phis_fn(occs0))
+    tbl = spin === :up ? (delta == 1 ? _adag_up : _a_up) : (delta == 1 ? _adag_down : _a_down)
+    amp = _amplitude(tbl, q_out, q_in)
+    amp === nothing && return nothing
+    if expand
+        spec = chain_spec(x)
+        occs0 = _sharp_occs0(x, q_out)
+        χ = expanded_shifted_state(x, imp_up, imp_down, spin, delta,
+                                   far_pair_directions(spec)(occs0))
+        return SectorSumState([χ], [1.0], [ψ.charges[1] .+ (q_out .- q_in)], Float64(sign(amp)))
+    end
+    shifted = fiducial_state(x; imp_up = q_out[1], imp_down = q_out[2])
+    q_d = q_out .- q_in
+    # charge-matched pairing: ψ component at Q ↔ shifted component at Q + q_d
+    perm = [findfirst(==(Q .+ q_d), shifted.charges) for Q in ψ.charges]
+    all(!isnothing, perm) || error("sector pairing failed for the insertion")
+    return SectorSumState(shifted.comps[perm], shifted.weights[perm], ψ.charges, Float64(sign(amp)))
+end
+
+"vacuum-class fiducial as a single-component SectorSumState of the equivalent expansion"
+function _expanded_sectorstate(x::Union{SISBD,SIDBD}, imp_up::Int, imp_down::Int)
+    spec = chain_spec(x)
+    occs0 = _sharp_occs0(x, (imp_up, imp_down))
+    ψ = expanded_state(spec, occs0, far_pair_directions(spec)(occs0))
+    total = (0, 0)
+    for o in occs0
+        total = total .+ o
+    end
+    return SectorSumState([ψ], [1.0], [total], 1.0)
 end

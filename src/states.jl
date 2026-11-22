@@ -3,18 +3,202 @@
 # ==============================================================================
 
 """
-    separable_state(x::Union{SISBD,SIDBD}; imp_up=0, imp_down=0, T=ComplexF64)
+    SectorSumState
 
-Separable product state of the thermo-field chain: the impurity orbital carries the
-given up/down occupations and every bath branch is in its fiducial state
-(a₁ sites empty, a₂ sites fully occupied = zero holes), i.e. |∅₁⟩⊗|F₂⟩.
+Direct sum of definite-total-charge MPS components with normalized weights:
+|ψ⟩ = Σ_j phase·√w_j |ψ_j⟩ (phase shared, ±1). The thermofield-double fiducial
+superposes conserved-charge sectors (each TFD pair mixes the |00⟩ and |11⟩
+branches), so it cannot live in a single U₁×U₁ sector; the chain Hamiltonian
+conserves the charge, hence the components evolve independently and every
+observable is a weighted sum. `charges[j]` is the total charge of component j.
 """
-function separable_state(x::Union{SISBD,SIDBD}; imp_up::Int = 0, imp_down::Int = 0,
-                         T::Type{<:Number} = ComplexF64)
+struct SectorSumState
+    comps::Vector{DMRG.MPS}
+    weights::Vector{Float64}
+    charges::Vector{Charge}
+    phase::Float64
+end
+SectorSumState(comps, weights, charges) = SectorSumState(comps, weights, charges, 1.0)
+
+"normalized sector-sum expectation value: Σ_j w_j ⟨op⟩_j"
+function expectationvalue(op, s::SectorSumState)
+    return sum(w * expectationvalue(op, c) for (w, c) in zip(s.weights, s.comps))
+end
+
+# different sectors are orthogonal; shared phase aside, the norm² is Σ weights
+function dot(s::SectorSumState, t::SectorSumState)
+    s.charges == t.charges || return zero(sum(s.weights))
+    return s.phase * t.phase * sum(min.(s.weights, t.weights))
+end
+
+function evolve!(s::SectorSumState, h, tspan::Tuple{<:Real,<:Real}; δt::Real, kwargs...)
+    foreach(c -> evolve!(c, h, tspan; δt, kwargs...), s.comps)
+    return s
+end
+
+function evolve!(s::SectorSumState, h; δt::Real, nsteps::Integer, kwargs...)
+    foreach(c -> evolve!(c, h; δt = δt, nsteps = nsteps, kwargs...), s.comps)
+    return s
+end
+
+"per-component TDVP caches; `sweep!` advances every component in lockstep"
+struct SectorSumCaches
+    caches::Vector{Any}
+end
+function environments(h, s::SectorSumState)
+    return SectorSumCaches([environments(h, c) for c in s.comps])
+end
+function sweep!(c::SectorSumCaches, alg)
+    foreach(sub -> sweep!(sub, alg), c.caches)
+    return c
+end
+
+"""
+    fiducial_state(x::Union{SISBD,SIDBD}; imp_up=0, imp_down=0, T=ComplexF64) -> SectorSumState
+
+Fiducial state of the thermo-field chain: the impurity orbital carries the given
+up/down occupations and every bath mode k is in its thermofield-double state
+⊗_σ (√(1−n_k)|0ₐ₁ 0ₐ₂⟩ + √n_k|1ₐ₁ 1ₐ₂⟩) on the interleaved (a₁, a₂) pair — the
+exact pure-state image of the thermal bath (see the models.jl header). For
+n_k = 0 this reduces to the (single-component) product vacuum.
+"""
+function fiducial_state(x::Union{SISBD,SIDBD}; imp_up::Int = 0, imp_down::Int = 0,
+                        T::Type{<:Number} = ComplexF64)
+    L = length(chain_spec(x).kinds)
+    lookup = Dict(_sector((q1, q2)) => (q1, q2) for q1 in 0:(2L) for q2 in 0:(2L))
+    ψ = _fiducial_mps(x; imp_up, imp_down, T)
+    return _split_sectors(ψ, lookup, T)
+end
+
+"raw thermofield-double fiducial: ONE MPS with a multi-sector final bond"
+function _fiducial_mps(x::Union{SISBD,SIDBD}; imp_up::Int, imp_down::Int,
+                       T::Type{<:Number} = ComplexF64)
     (imp_up in (0, 1) && imp_down in (0, 1)) || throw(ArgumentError("impurity occupations must be 0 or 1"))
     spec = chain_spec(x)
-    sectors = [_sector(k == spec.imp_site ? (imp_up, imp_down) : (0, 0)) for k in 1:length(spec.kinds)]
-    return _widen_svectors(prodmps(T, spec.spaces, sectors))
+    L = length(spec.kinds)
+    imp = spec.imp_site
+    a1n = Dict{Int,Float64}(i => n for (i, j, n) in _mode_pairs(x))   # a₁ site => n_k
+
+    # running cut: branch charges (each a dim-1 sector) and their amplitudes
+    lookup = Dict(_sector((q1, q2)) => (q1, q2) for q1 in 0:(2L) for q2 in 0:(2L))
+    qs::Vector{Charge} = Charge[(0, 0)]
+    amps = Dict{Charge,Float64}((0, 0) => 1.0)
+    # entries seeded by the current pair's a₁ site: (pre-pair charge, τ, intermediate, amp)
+    pairentries = Tuple{Charge,Charge,Charge,Float64}[]
+    Ws = Vector{Any}(undef, L)
+    for i in 1:L
+        ps = spec.spaces[i]
+        sortqs = sort(qs)
+        if i == imp
+            p = (imp_up, imp_down)
+            shifted = [_add(q, p) for q in sortqs]     # mid-chain: all branches shift
+            W = zeros(T, _bond_space(sortqs) ⊗ ps ← _bond_space(shifted))
+            rowmap = _block_rowmap(W, lookup)
+            for q in sortqs
+                _set_mps_block!(W, q, p, amps[q], rowmap)
+            end
+            Ws[i] = W
+            qs = shifted
+            amps = Dict{Charge,Float64}(q => amps[qq] for (q, qq) in zip(shifted, sortqs))
+        elseif haskey(a1n, i)
+            n = a1n[i]
+            inter = Dict{Charge,Float64}()     # intermediate branch => summed amplitude
+            pairentries = Tuple{Charge,Charge,Charge,Float64}[]
+            for qin in sortqs, τ in ((0, 0), (1, 0), (0, 1), (1, 1))
+                v = amps[qin] * sqrt((1 - n)^(2 - τ[1] - τ[2]) * n^(τ[1] + τ[2]))
+                iszero(v) && continue
+                m = _add(qin, τ)
+                inter[m] = get(inter, m, 0.0) + v
+                push!(pairentries, (qin, τ, m, v))
+            end
+            outqs = sort(collect(keys(inter)))
+            W = zeros(T, _bond_space(sortqs) ⊗ ps ← _bond_space(outqs))
+            rowmap = _block_rowmap(W, lookup)
+            for (qin, τ, m, v) in pairentries
+                _set_mps_block!(W, qin, τ, v, rowmap)
+            end
+            Ws[i] = W
+            qs = outqs
+            amps = inter
+        else                                     # a₂ site: close the pair with unit blocks
+            newamps = Dict{Charge,Float64}()
+            for (qin, τ, m, _) in pairentries
+                o = _add(m, τ)
+                newamps[o] = get(newamps, o, 0.0) + amps[m]
+            end
+            outqs = sort(collect(keys(newamps)))
+            W = zeros(T, _bond_space(sortqs) ⊗ ps ← _bond_space(outqs))
+            rowmap = _block_rowmap(W, lookup)
+            for (qin, τ, m, _) in pairentries
+                _set_mps_block!(W, m, τ, 1.0, rowmap)
+            end
+            Ws[i] = W
+            qs = outqs
+            amps = newamps
+            pairentries = Tuple{Charge,Charge,Charge,Float64}[]
+        end
+    end
+    return MPS(Vector{typeof(Ws[1])}(Ws))
+end
+
+"split a multi-sector-final-bond MPS into definite-charge normalized components"
+function _split_sectors(ψ::DMRG.MPS, lookup, ::Type{T}) where {T<:Number}
+    comps = DMRG.MPS[]
+    weights = Float64[]
+    charges = Charge[]
+    for s in sort(collect(sectors(space(ψ[length(ψ)], 3))))
+        # the final bond is stored dualized: convert the sector label back to the charge
+        q = lookup[conj(s)]
+        φ = DMRG.MPS(deepcopy(ψ.data), deepcopy(getfield(ψ, :s)))
+        # project the last tensor onto the single output sector s (rebuild with a
+        # 1-sector domain so the component is a genuine single-sector MPS)
+        WL = φ[end]
+        WLp = zeros(T, space(WL, 1) ⊗ space(WL, 2) ← Rep[U₁×U₁](conj(s) => 1))
+        copyto!(block(WLp, conj(s)), block(WL, conj(s)))
+        φ.data[end] = WLp
+        w = real(dot(φ, φ))
+        w > 1e-14 || continue
+        comp = _widen_svectors(_right_canonicalize!(φ))
+        comp[1] = comp[1] * (1 / sqrt(w))       # components must be normalized:
+        push!(comps, comp)                       # |ψ⟩ = Σ_j phase·√w_j |ψ_j⟩
+        push!(weights, w)
+        push!(charges, q)
+    end
+    isempty(comps) && error("empty sector split")
+    total = sum(weights)
+    return SectorSumState(comps, weights ./ total, charges)
+end
+
+"dim-1-per-charge bond space"
+_bond_space(qs::Vector{Charge}) =
+    isempty(qs) ? oneunit(Rep[U₁×U₁]) :
+    foldl(⊕, (Rep[U₁×U₁](_sector(q) => 1) for q in qs))
+
+# per-tensor row lookup: fused charge => ((bond sector, phys sector) => row),
+# derived from TensorKit's own `fusiontrees` enumeration (the storage order of the
+# codomain decomposition) — no hand-counted canonical ordering anywhere.
+function _block_rowmap(W, lookup)
+    rows = Dict{Charge,Dict{Tuple{Charge,Charge},Int}}()
+    for ft in fusiontrees(W)
+        ctree = ft[1]
+        length(ctree.uncoupled) == 2 || error("unexpected fusion tree arity")
+        ql = lookup[ctree.uncoupled[1]]
+        p = lookup[ctree.uncoupled[2]]
+        key = lookup[ctree.coupled]
+        d = get!(Dict{Tuple{Charge,Charge},Int}, rows, key)
+        d[(ql, p)] = length(d) + 1
+    end
+    return rows
+end
+
+function _set_mps_block!(W, ql::Charge, p::Charge, val, rowmap)
+    key = _add(ql, p)
+    d = get(rowmap, key, nothing)
+    d === nothing && error("no block for charge $key")
+    row = get(d, (ql, p), nothing)
+    row === nothing && error("no slot for $ql ⊗ $p in block $key")
+    block(W, _sector(key))[row, 1] = val
+    return W
 end
 
 # DMRG's TDVP stores plain (1,1) tensors into `mps.s`, while `prodmps` leaves the
@@ -31,6 +215,10 @@ end
 
 # ==============================================================================
 # Equivalent initial-state expansion (the OptimalExpansion route).
+#
+# NOTE: only valid on VACUUM baths (n_k = 0), where the fiducial state is the
+# sharp product vacuum. For finite-temperature baths the fiducial is the
+# thermofield-double superposition and this machinery does not apply.
 #
 # The two-site TDVP sweep cannot seed the far-pair amplitudes (impurity ↔ bath
 # mode beyond the current pair) that the first H application creates on the
@@ -53,9 +241,8 @@ end
 #     redundant directions are safe.
 # ==============================================================================
 
-"per-site charge label of a particle-occupation tuple (hole sites relabeled)"
-_site_label(spec::ChainSpec, i::Int, occ::Charge) =
-    spec.kinds[i] === :hole ? (1 - occ[1], 1 - occ[2]) : (occ[1], occ[2])
+"per-site charge label of a particle-occupation tuple"
+_site_label(spec::ChainSpec, i::Int, occ::Charge) = occ
 
 """
     expanded_state(spec, occs0, phis; base_vals = nothing, T = ComplexF64) -> DMRG.MPS
@@ -151,10 +338,9 @@ Structural far-pair directions of an insertion chain: for every
 impurity-annihilating channel (`*_hc`, the only half that acts on the fiducial
 bath) and every non-impurity channel end with a nonzero coefficient NON-adjacent
 to the impurity, the pair direction the hopping populates in one application —
-impurity spin emptied and the bath site changed per branch kind (particle site
-filled, hole site particle-removed), subject to the occupation availability.
-Adjacent pairs are omitted (the sweep window seeds them by itself). Verified
-element-for-element against the dense residual support in
+impurity spin emptied and the bath site filled, subject to the occupation
+availability. Adjacent pairs are omitted (the sweep window seeds them by
+itself). Verified element-for-element against the dense residual support in
 scripts/diag_expansion.jl.
 """
 function far_pair_directions(spec::ChainSpec)
@@ -163,26 +349,40 @@ function far_pair_directions(spec::ChainSpec)
         out = Vector{Vector{Charge}}()
         for ch in spec.channels
             str = String(ch.name)
-            (endswith(str, "_hc") && (startswith(str, "up") || startswith(str, "down"))) || continue
+            (startswith(str, "up") || startswith(str, "down")) || continue
             σ = startswith(str, "up") ? 1 : 2
+            filling = endswith(str, "_hop")       # imp filled + bath emptied
             for end_ in (ch.opens..., ch.closes...)
                 s = end_.site
                 (iszero(end_.coef) || s == imp || abs(s - imp) == 1) && continue
-                occs0[imp][σ] == 1 || continue
-                φ = collect(occs0)
-                φ[imp] = σ == 1 ? (0, occs0[imp][2]) : (occs0[imp][1], 0)
-                if spec.kinds[s] === :hole
+                if filling
+                    occs0[imp][σ] == 0 || continue
                     occs0[s][σ] == 1 || continue
-                    φ[s] = σ == 1 ? (0, occs0[s][2]) : (occs0[s][1], 0)
                 else
+                    occs0[imp][σ] == 1 || continue
                     occs0[s][σ] == 0 || continue
-                    φ[s] = σ == 1 ? (1, occs0[s][2]) : (occs0[s][1], 1)
                 end
+                φ = collect(occs0)
+                φ[imp] = σ == 1 ? (filling ? 1 : 0, occs0[imp][2]) :
+                         (occs0[imp][1], filling ? 1 : 0)
+                φ[s] = σ == 1 ? (filling ? 0 : 1, occs0[s][2]) :
+                       (occs0[s][1], filling ? 0 : 1)
                 φ in out || push!(out, φ)
             end
         end
         out
     end
+end
+
+"sharp product occupations of the saturated (T = 0) fiducial: the a₂ branch
+carries the saturated f̂₂ occupations (n_k per spin), a₁ the vacuum"
+function _sharp_occs0(x::Union{SISBD,SIDBD}, imp_occs::Charge)
+    spec = chain_spec(x)
+    return ntuple(i -> i == spec.imp_site ? imp_occs :
+                  begin
+                      n = get(Dict{Int,Float64}(j => n for (i2, j, n) in _mode_pairs(x)), i, 0.0)
+                      (round(Int, n), round(Int, n))
+                  end, length(spec.kinds))
 end
 
 """
@@ -196,7 +396,7 @@ function expanded_shifted_state(x::Union{SISBD,SIDBD}, imp_up::Int, imp_down::In
                                 spin::Symbol, delta::Int, phis; T::Type{<:Number} = ComplexF64)
     spec = chain_spec(x)
     q_in = (imp_up, imp_down)
-    q_out = spin === :up ? (q_in[1] + delta, q_in[2]) : (q_in[1], q_in[2] + delta)
+    q_out = spin === :up ? (q_in[1] + delta, imp_down) : (imp_up, q_in[2] + delta)
     ((0 <= q_out[1] <= 1) && (0 <= q_out[2] <= 1)) || return nothing
     tbl = if spin === :up
         delta == 1 ? _adag_up : _a_up
@@ -205,8 +405,7 @@ function expanded_shifted_state(x::Union{SISBD,SIDBD}, imp_up::Int, imp_down::In
     end
     amp = _amplitude(tbl, q_out, q_in)
     amp === nothing && return nothing
-    occs0 = ntuple(i -> i == spec.imp_site ? q_out :
-                   (spec.kinds[i] === :hole ? (1, 1) : (0, 0)), length(spec.kinds))
+    occs0 = _sharp_occs0(x, q_out)
     base_vals = ones(length(spec.kinds))
     base_vals[spec.imp_site] = amp
     return expanded_state(spec, occs0, phis; base_vals, T)

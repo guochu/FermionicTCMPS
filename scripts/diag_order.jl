@@ -14,18 +14,18 @@ xr = discretefermionicbath([0.5], [0.45]; β = 0.8, μ = 0.0)
 x = SIDBD(xl, xr; U = 1.7, εd = -0.3, Jl = 1.0, Jr = 1.0)
 spec = FermionicTCMPS.chain_spec(x)
 L = length(spec.kinds); imp = spec.imp_site
-wsl, vl1, vl2 = FermionicTCMPS.thermofield_couplings(x.bathl)
-wsr, vr1, vr2 = FermionicTCMPS.thermofield_couplings(x.bathr)
-couples = vcat([(2k - 1, 2k, wsl[k], x.Jl * vl1[k], x.Jl * vl2[k]) for k in eachindex(wsl)],
-               [(imp + 2k - 1, imp + 2k, wsr[k], x.Jr * vr1[k], x.Jr * vr2[k]) for k in eachindex(wsr)])
+wsl, vl1, vl2, nsl = FermionicTCMPS.thermofield_couplings(x.bathl)
+wsr, vr1, vr2, nsr = FermionicTCMPS.thermofield_couplings(x.bathr)
+couples = vcat([(2k - 1, 2k, wsl[k], x.Jl * vl1[k], x.Jl * vl2[k], nsl[k]) for k in eachindex(wsl)],
+               [(imp + 2k - 1, imp + 2k, wsr[k], x.Jr * vr1[k], x.Jr * vr2[k], nsr[k]) for k in eachindex(wsr)])
 H = dense_hamiltonian(copy(spec.kinds), imp, couples; εd = -0.3, U = 1.7)
 h = mpo(x)
 TRUNC = truncdimcutoff(D = 256, ϵ = 1e-10, add_back = 10)
 
 # reference: raw overlap <chi_up|chi(t)> from the dense eigendecomposition
-_flatv(occs) = 1 + sum((occs[s][1] + 2 * occs[s][2]) * 4^(L - s) for s in 1:L)
-occs0 = ntuple(i -> i == imp ? (0, 0) : (spec.kinds[i] === :hole ? (1, 1) : (0, 0)), L)
-ψ0 = zeros(ComplexF64, 4^L); ψ0[_flatv(occs0)] = 1.0
+modes = vcat([(2k - 1, 2k, nsl[k]) for k in eachindex(wsl)],
+             [(imp + 2k - 1, imp + 2k, nsr[k]) for k in eachindex(wsr)])
+ψ0 = dense_tfd_vector(spec, modes, (0, 0))
 χv = zeros(ComplexF64, 4^L)
 for i in eachindex(ψ0)
     iszero(ψ0[i]) && continue

@@ -26,19 +26,9 @@ _add(a::Charge, b::Charge) = (a[1] + b[1], a[2] + b[2])
 """
     particle_space()
 
-Physical space of a particle-label site: sector labels are the occupations (n↑, n↓).
+Physical space of a chain site: sector labels are the occupations (n↑, n↓).
 """
 particle_space() = Rep[U₁×U₁]((0, 0) => 1, (1, 0) => 1, (0, 1) => 1, (1, 1) => 1)
-
-"""
-    hole_space()
-
-Physical space of an a₂ (particle–hole transformed) branch site. Sector labels count
-HOLES per spin: the particle-empty state carries (1,1), the particle-full state (0,0).
-As a `TensorKit.Space` this coincides with `particle_space()`; only the state↔sector
-assignment differs.
-"""
-hole_space() = Rep[U₁×U₁]((0, 0) => 1, (1, 0) => 1, (0, 1) => 1, (1, 1) => 1)
 
 # FSM bond slots: every slot is a one-dimensional single-charge space. Closed and
 # final slots carry the trivial charge, channel slots carry the charge of the
@@ -96,40 +86,11 @@ const _n_up = table((P_UP, P_UP) => 1.0, (P_FULL, P_FULL) => 1.0)
 const _n_down = table((P_DOWN, P_DOWN) => 1.0, (P_FULL, P_FULL) => 1.0)
 const _nn = table((P_FULL, P_FULL) => 1.0)
 
-# ---------------- hole-label tables (a₂ branch) ----------------
-const H_EMPTY = (1, 1)   # particle vacuum: one hole per spin
-const H_UP = (0, 1)      # particle up: down-hole present
-const H_DOWN = (1, 0)    # particle down: up-hole present
-const H_FULL = (0, 0)    # particle full: no holes
-
-# hole operators b ≡ f₂† : hole annihilation = particle creation (phases inherited)
-const _b_up = table(
-    (H_UP, H_EMPTY) => 1.0,
-    (H_FULL, H_DOWN) => 1.0,
-)
-const _b_down = table(
-    (H_DOWN, H_EMPTY) => 1.0,
-    (H_FULL, H_UP) => -1.0,
-)
-const _bdag_up = table(
-    (H_EMPTY, H_UP) => 1.0,
-    (H_DOWN, H_FULL) => 1.0,
-)
-const _bdag_down = table(
-    (H_EMPTY, H_DOWN) => 1.0,
-    (H_UP, H_FULL) => -1.0,
-)
-const _hole_parity = table(
-    (H_EMPTY, H_EMPTY) => 1.0,
-    (H_UP, H_UP) => -1.0,
-    (H_DOWN, H_DOWN) => -1.0,
-    (H_FULL, H_FULL) => 1.0,
-)
-const _nh_up = table((H_EMPTY, H_EMPTY) => 1.0, (H_DOWN, H_DOWN) => 1.0)
-const _nh_down = table((H_EMPTY, H_EMPTY) => 1.0, (H_UP, H_UP) => 1.0)
-
-# the particle- and hole-label spaces coincide as `TensorKit.Space` values, so site
-# kinds must be tracked separately (see `ChainSpec.kinds`)
+# All chain sites (impurity, a₁ and a₂ branch alike) use the particle-label
+# tables below: the a₂ branch represents the f̂₂ fermions directly (the
+# particle–hole labelling of the previous construction could not host the
+# intra-mode pairing term of the exact Bogoliubov image under charge-pure MPO
+# slots).
 
 """
     entry_tensor([T=Float64], ql, qr, pspace, amps)
