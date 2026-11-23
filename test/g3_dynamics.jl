@@ -298,6 +298,8 @@ end
     @test e2 < 0.02
     g3, = gf_greater_lesser_t(x, times; δt = 0.02, expand = true)
     @test abs(g3[1] - exact[1]) < 1e-7
+    g4, = gf_greater_lesser_t(x, times; δt = 0.02, trunc, warmup = :WII)
+    @test abs(g4[1] - exact[1]) < 5e-4    # WI/WII warm-up: flat WI/WII truncation offset
 end
 
 @testset "G3 free dynamics: double bath dense chain leg vs star frame" begin

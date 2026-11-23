@@ -169,17 +169,26 @@ low-weight directions are dropped). The sweep truncation then defaults to a
 bond cap covering the expanded chains (zero redundancy directions are
 truncated away, add_back = 0); without the expansion the KS MinD default
 applies.
+
+Alternatively `warmup = :WI` or `:WII` seeds the chains WITHOUT the expansion:
+WARMUP_STEPS sparse-evolution applications (Zaletel 1407.1832) at δt/warmup_steps
+cover the first coarse step on the unexpanded sharp fiducial — the sparse
+exponential acts on the full chain and populates the far-pair amplitudes —
+after which the compressed chains hand over to the TDVP sweeps.
 """
 function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real};
                              imp_up::Int = 0, imp_down::Int = 0, δt::Real,
                              expand::Bool = false, expand_D::Int = EXPANDED_DBUDGET,
-                             trunc::Union{Nothing,DMRG.TruncationDimCutoff} = nothing)
+                             trunc::Union{Nothing,DMRG.TruncationDimCutoff} = nothing,
+                             warmup::Symbol = :none, warmup_steps::Int = 10)
     h = mpo(x)
 
     steps = round.(Int, times ./ δt)
     all(abs(s * δt - t) ≤ 1e-8 * max(1.0, abs(t)) for (s, t) in zip(steps, times)) ||
         throw(ArgumentError("times must lie on the δt grid"))
     (issorted(times) && first(times) ≥ 0) || throw(ArgumentError("times must be sorted and non-negative"))
+    (warmup === :none || warmup === :WI || warmup === :WII) ||
+        throw(ArgumentError("warmup must be :none, :WI or :WII"))
 
     spec = chain_spec(x)
     ψ = expand ? expanded_fiducial(x; imp_up, imp_down, D = expand_D) :
@@ -187,14 +196,15 @@ function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real
     dmpo = Dict(:up => site_operator_mpo(spec.spaces, spec.imp_site, _a_up),
                 :down => site_operator_mpo(spec.spaces, spec.imp_site, _a_down))
 
-    ψcaches = [environments(h, c) for c in ψ.comps]   # sweep! mutates ψ.comps in place
+    # Any-typed: the warm-up may rebuild the caches with a widened .s container
+    ψcaches = Any[environments(h, c) for c in ψ.comps]   # sweep! mutates ψ.comps in place
     inserts = NamedTuple{(:kind, :weights, :comps, :caches, :sign, :spin, :qeta),
                          Tuple{Symbol,Any,Any,Any,Float64,Symbol,Any}}[]
     for spin in (:up, :down)
         χ = _inserted_state(x, spin, 1; ψ, imp_up, imp_down, expand, D = expand_D)
         if χ !== nothing
             push!(inserts, (kind = :gt, weights = χ.weights, comps = χ.comps,
-                            caches = [environments(h, c) for c in χ.comps],
+                            caches = Any[environments(h, c) for c in χ.comps],
                             sign = χ.phase * ψ.phase, spin = spin, qeta = (imp_up, imp_down)))
         end
         η = _inserted_state(x, spin, -1; ψ, imp_up, imp_down, expand, D = expand_D)
@@ -202,9 +212,43 @@ function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real
             # η's impurity occupations are the annihilated ones
             qeta = spin === :up ? (imp_up - 1, imp_down) : (imp_up, imp_down - 1)
             push!(inserts, (kind = :lt, weights = η.weights, comps = η.comps,
-                            caches = [environments(h, c) for c in η.comps],
+                            caches = Any[environments(h, c) for c in η.comps],
                             sign = η.phase * ψ.phase, spin = spin, qeta = qeta))
         end
+    end
+
+    # sparse-evolution warm-up (WI/WII, Zaletel 1407.1832): the sharp fiducial
+    # cannot seed the far-pair amplitudes under two-site TDVP, but the sparse
+    # exponential acts on the full chain — WARMUP_STEPS applications at
+    # δt/WARMUP_STEPS cover the FIRST coarse step and populate the amplitudes,
+    # after which the (compressed) chains hand over to the TDVP sweeps. Samples
+    # with n = 0 (t = 0) are evaluated on the un-warmed initial state.
+    prev = 0
+    warmed = false
+    function _warmup!()
+        δw = δt / warmup_steps
+        algW = warmup === :WI ? DMRG.WI() : DMRG.WII(tol = 1.0e-12, maxiter = 10_000)
+        Wm = MPO(timeevompo(h, -im * δw, algW))
+        wt = truncdimcutoff(D = 256, ϵ = 1.0e-12, add_back = 0)
+        algc = Orthogonalize(alg = SVD(), trunc = wt)
+        for _ in 1:warmup_steps
+            for (j, c) in enumerate(ψ.comps)
+                c2 = Wm * c
+                canonicalize!(c2, alg = algc)
+                ψ.comps[j] = c2
+            end
+            for ins in inserts, (j, c) in enumerate(ins.comps)
+                c2 = Wm * c
+                canonicalize!(c2, alg = algc)
+                ins.comps[j] = c2
+            end
+            foreach((j, c) -> ψcaches[j] = environments(h, c), eachindex(ψcaches), ψ.comps)
+            for ins in inserts
+                foreach((j, c) -> ins.caches[j] = environments(h, c),
+                        eachindex(ins.caches), ins.comps)
+            end
+        end
+        return 1
     end
 
     # the expanded chains carry one bond slot per configuration/direction channel:
@@ -225,8 +269,11 @@ function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real
 
     gt = zeros(ComplexF64, length(times))
     lt = zeros(ComplexF64, length(times))
-    prev = 0
     for (i, n) in enumerate(steps)
+        if !warmed && warmup !== :none && n ≥ 1
+            prev = _warmup!()       # the sparse warm-up covers the first coarse step
+            warmed = true
+        end
         for _ in (prev + 1):n
             foreach(c -> sweep!(c, alg), ψcaches)
             foreach(ins -> foreach(c -> sweep!(c, alg), ins.caches), inserts)
