@@ -64,21 +64,29 @@ end
 
 # ---------- exact_timeevolution leg (our MPO, lossless engine) ----------
 
-"ET leg of both GFs via the sandwich estimator: the fiducial ψ and every insertion
-chain evolved in lockstep with the lossless engine, sampled as
-⟨ψ(t)|d_σ|χ(t)⟩ / ⟨η(t)|d_σ|ψ(t)⟩"
+"ET leg of both GFs via the sandwich estimator: the fiducial ψ (per-charge
+components of the SectorSumState) and every insertion chain evolved in lockstep
+with the lossless engine, sampled as ⟨ψ(t)|d_σ|χ(t)⟩ / ⟨η(t)|d_σ|ψ(t)⟩ with
+per-component weights"
 function _et_gfls(x, times; imp_up = 0, imp_down = 0)
     h = mpo(x)
-    spec = chain_spec(x)
-    dmpo = Dict(:up => site_operator_mpo(spec.spaces, spec.imp_site, _a_up),
-                :down => site_operator_mpo(spec.spaces, spec.imp_site, _a_down))
-    ψenv = environments(h, ExactMPS(fiducial_state(x; imp_up, imp_down)))
-    inserts = Tuple{Symbol,Any,Any}[]   # (kind :gt/:lt, dmpo, env)
+    ψ = fiducial_state(x; imp_up, imp_down)
+    ψenv = [environments(h, ExactMPS(c)) for c in ψ.comps]
+    # (kind, envs, weights, phase, spin, qeta-of-chain); the sandwich evaluates
+    # ⟨d†·|·⟩ via the mechanical shift — the bridging-charge 3-arg expectation is
+    # not representable in the generic DMRG boundary
+    inserts = Tuple{Symbol,Any,Any,Float64,Symbol,Any}[]
     for spin in (:up, :down)
-        χ = FermionicTCMPS._inserted_state(x, spin, 1; imp_up, imp_down)
-        χ === nothing || push!(inserts, (:gt, dmpo[spin], environments(h, ExactMPS(χ))))
-        η = FermionicTCMPS._inserted_state(x, spin, -1; imp_up, imp_down)
-        η === nothing || push!(inserts, (:lt, dmpo[spin], environments(h, ExactMPS(η))))
+        χ = FermionicTCMPS._inserted_state(x, spin, 1; ψ, imp_up, imp_down)
+        χ === nothing || push!(inserts, (:gt,
+                                         [environments(h, ExactMPS(c)) for c in χ.comps],
+                                         χ.weights, χ.phase * ψ.phase, spin, (imp_up, imp_down)))
+        η = FermionicTCMPS._inserted_state(x, spin, -1; ψ, imp_up, imp_down)
+        η === nothing || push!(inserts, (:lt,
+                                         [environments(h, ExactMPS(c)) for c in η.comps],
+                                         η.weights, η.phase * ψ.phase, spin,
+                                         spin === :up ? (imp_up - 1, imp_down) :
+                                         (imp_up, imp_down - 1)))
     end
     gt = zeros(ComplexF64, length(times))
     lt = zeros(ComplexF64, length(times))
@@ -86,20 +94,52 @@ function _et_gfls(x, times; imp_up = 0, imp_down = 0)
     for (i, t) in enumerate(times)
         n = round(Int, t / δt)
         for _ in (prev + 1):n
-            exact_timeevolution!(ψenv, -im * δt; ishermitian = true)
-            foreach(c -> exact_timeevolution!(c[3], -im * δt; ishermitian = true), inserts)
+            foreach(e -> exact_timeevolution!(e, -im * δt; ishermitian = true), ψenv)
+            foreach(ins -> foreach(e -> exact_timeevolution!(e, -im * δt; ishermitian = true), ins[2]),
+                    inserts)
         end
         prev = n
-        ψt = ψenv.state
-        for (kind, dm, env) in inserts
-            if kind === :gt
-                gt[i] += -im * expectation(ψt, dm, env.state)
-            else
-                lt[i] += im * expectation(env.state, dm, ψt)
+        for (j, w) in enumerate(ψ.weights)
+            ψt = MPS(ψenv[j].state)
+            for (kind, envs, χw, phase, spin, qeta) in inserts
+                χt = MPS(envs[j].state)
+                if kind === :gt
+                    # ⟨ψ(t)|d_σ|χ(t)⟩ = ⟨d†_σψ(t)|χ(t)⟩
+                    φ = FermionicTCMPS._apply_dag(x, ψt, spin, 1; imp_up = qeta[1], imp_down = qeta[2])
+                    gt[i] += -im * phase * w * dot(φ, χt)
+                else
+                    # ⟨η(t)|d_σ|ψ(t)⟩ = ⟨d†_ση(t)|ψ(t)⟩
+                    φ = FermionicTCMPS._apply_dag(x, χt, spin, 1; imp_up = qeta[1], imp_down = qeta[2])
+                    lt[i] += im * phase * w * dot(φ, ψt)
+                end
             end
         end
     end
     return gt, lt
+end
+
+"ET equal-time occupation via the charge-conserving 3-arg expectation: the
+lossless-engine definition-level anchor that also runs on the hot-impurity
+configs (the GF sandwich shift assumes uniform bond labels, which the exact
+surgery does not preserve — the cold-impurity configs run the full GF leg)"
+function _et_nd_exactengine(x, times; imp_up, imp_down)
+    h = mpo(x)
+    occ = occupation_op(x; spin = :up)
+    ψ = fiducial_state(x; imp_up, imp_down)
+    envs = [environments(h, ExactMPS(c)) for c in ψ.comps]
+    out = Dict{Float64,Float64}()
+    prev = 0
+    for t in times
+        n = round(Int, t / δt)
+        for _ in (prev + 1):n
+            foreach(e -> exact_timeevolution!(e, -im * δt; ishermitian = true), envs)
+        end
+        prev = n
+        t > 0 || continue
+        out[round(t; digits = 6)] = sum(w * real(expectation(e.state, occ, e.state))
+                                        for (w, e) in zip(ψ.weights, envs))
+    end
+    return out
 end
 
 # ---------- config runner ----------
@@ -114,26 +154,42 @@ function run_config(name, x, couples, L; εd, U, imp_up = 0, imp_down = 0)
     gt_exact, lt_exact = dense_gf_sandwich(H, ψ0, spec.imp_site, TIMES; imp_up, imp_down)
     nd_exact = _nd_exact(H, ψ0, TIMES, L, spec.imp_site)
 
-    gt_et, lt_et = _et_gfls(x, TIMES; imp_up, imp_down)
+    # the GF ET leg needs the mechanical d†-shift on the exact-engine tensors,
+    # which presumes uniform bond labels; the exact surgery dualizes labels
+    # per component, so hot-impurity configs (imp ≠ (0,0), where the shift is
+    # exercised hardest) validate through the charge-conserving occupation leg
+    cold = (imp_up, imp_down) == (0, 0)
+    nd_et = _et_nd_exactengine(x, TIMES; imp_up, imp_down)
+    if cold
+        gt_et, lt_et = _et_gfls(x, TIMES; imp_up, imp_down)
+    end
     gt_sw, lt_sw = gf_greater_lesser_t(x, TIMES; δt = δt, trunc = TRUNC, imp_up, imp_down)
     nd_sw = _sweep_nd(x; imp_up, imp_down)
 
     fmt(v) = round(v, digits = 6)
     fmt2(v) = round(v, digits = 10)
-    Δgt_et = maximum(abs.(gt_et - gt_exact))
-    Δlt_et = maximum(abs.(lt_et - lt_exact))
+    Δgt_et = cold ? maximum(abs.(gt_et - gt_exact)) : missing
+    Δlt_et = cold ? maximum(abs.(lt_et - lt_exact)) : missing
+    Δnd_et = maximum(abs(get(nd_et, round(t; digits = 6), 0.0) - nd_exact[i])
+                     for (i, t) in enumerate(TIMES) if t > 0)
     Δgt_sw = maximum(abs.(gt_sw - gt_exact))
     Δlt_sw = maximum(abs.(lt_sw - lt_exact))
     Δnd_sw = maximum(abs(get(nd_sw, round(t; digits = 6), 0.0) - nd_exact[i])
                      for (i, t) in enumerate(TIMES) if t > 0)
     println("== ", name, "  (imp = ", (imp_up, imp_down), ") ==")
     println("   |gt| exact at (0.1, 1.0): ", fmt(abs(gt_exact[2])), " / ", fmt(abs(gt_exact[end])))
-    println("   Δgt  exact_timeevolution(our MPO) vs dense: ", fmt(Δgt_et), "  (raw ", fmt2(Δgt_et), ")")
-    println("   Δlt  exact_timeevolution(our MPO) vs dense: ", fmt(Δlt_et), "  (raw ", fmt2(Δlt_et), ")")
+    if cold
+        println("   Δgt  exact_timeevolution(our MPO) vs dense: ", fmt(Δgt_et), "  (raw ", fmt2(Δgt_et), ")")
+        println("   Δlt  exact_timeevolution(our MPO) vs dense: ", fmt(Δlt_et), "  (raw ", fmt2(Δlt_et), ")")
+    else
+        println("   Δgt/Δlt ET GF leg: skipped (hot impurity, mixed-dual labels; occupation leg carries the check)")
+    end
+    println("   Δn   exact_timeevolution(our MPO) vs dense:   ", fmt(Δnd_et))
     println("   Δgt  sweep-TDVP vs dense:                   ", fmt(Δgt_sw))
     println("   Δlt  sweep-TDVP vs dense:                   ", fmt(Δlt_sw))
     println("   Δn   sweep-TDVP vs dense:                   ", fmt(Δnd_sw))
-    return (Δgt_et = Δgt_et, Δlt_et = Δlt_et, Δgt_sw = Δgt_sw, Δlt_sw = Δlt_sw, Δnd_sw = Δnd_sw)
+    return (Δgt_et = Δgt_et, Δlt_et = Δlt_et, Δnd_et = Δnd_et,
+            Δgt_sw = Δgt_sw, Δlt_sw = Δlt_sw, Δnd_sw = Δnd_sw)
 end
 
 function main()

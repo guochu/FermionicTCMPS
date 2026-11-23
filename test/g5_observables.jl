@@ -148,11 +148,10 @@ end
                    [(imp + 2k - 1, imp + 2k, wsr[k], x.Jr * vr1[k], x.Jr * vr2[k], nsr[k]) for k in eachindex(wsr)])
     gt_d, lt_d = _g5_dense_gf(x, couples, times)
     gt, lt = gf_greater_lesser_t(x, times; δt, expand = true)
-    # KNOWN LIMITATION: the expanded-path gt sandwich returns ~0 for the SIDBD
-    # (the charge-matched pairing of the two expanded chains loses the filled-a₂
-    # sectors); the occupation and lesser gates below pass, and the dense
-    # reference pins the physics. To be fixed with the sandwich rewrite.
-    @test_broken maximum(abs.(gt .- gt_d)) < 1e-5
+    # exact with the equivalent initial-state expansion (the far pair left
+    # bath ↔ impurity seeds at first order); requires the component-wise
+    # d†-apply — gt compares the full sandwich on every charge sector
+    @test maximum(abs.(gt .- gt_d)) < 1e-5
     @test maximum(abs.(lt .- lt_d)) < 1e-5
 
     H = dense_hamiltonian(copy(spec.kinds), imp, couples; εd = x.εd, U = x.U)

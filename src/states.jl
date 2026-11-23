@@ -95,17 +95,22 @@ function _fiducial_mps(x::Union{SISBD,SIDBD}; imp_up::Int, imp_down::Int,
             W = zeros(T, _bond_space(sortqs) ⊗ ps ← _bond_space(shifted))
             rowmap = _block_rowmap(W, lookup)
             for q in sortqs
-                _set_mps_block!(W, q, p, amps[q], rowmap)
+                _set_mps_block!(W, q, p, 1.0, rowmap)   # amplitudes live upstream
             end
             Ws[i] = W
             qs = shifted
             amps = Dict{Charge,Float64}(q => amps[qq] for (q, qq) in zip(shifted, sortqs))
         elseif haskey(a1n, i)
             n = a1n[i]
-            inter = Dict{Charge,Float64}()     # intermediate branch => summed amplitude
+            inter = Dict{Charge,Float64}()     # intermediate branches (structure only)
             pairentries = Tuple{Charge,Charge,Charge,Float64}[]
             for qin in sortqs, τ in ((0, 0), (1, 0), (0, 1), (1, 1))
-                v = amps[qin] * sqrt((1 - n)^(2 - τ[1] - τ[2]) * n^(τ[1] + τ[2]))
+                # per-pair weight factor ONLY: the running amplitudes already live
+                # in the upstream tensors, so multiplying amps[qin] here would
+                # double-count every earlier pair's weight (K = 1 and saturated
+                # baths are immune, which is why this showed up only at finite β
+                # with K ≥ 2)
+                v = sqrt((1 - n)^(2 - τ[1] - τ[2]) * n^(τ[1] + τ[2]))
                 iszero(v) && continue
                 m = _add(qin, τ)
                 inter[m] = get(inter, m, 0.0) + v
@@ -216,22 +221,30 @@ end
 # ==============================================================================
 # Equivalent initial-state expansion (the OptimalExpansion route).
 #
-# NOTE: only valid on VACUUM baths (n_k = 0), where the fiducial state is the
-# sharp product vacuum. For finite-temperature baths the fiducial is the
-# thermofield-double superposition and this machinery does not apply.
+# Works on the FULL thermofield-double fiducial: for finite-temperature baths the
+# fiducial is a direct sum over total-charge sectors whose components superpose
+# same-charge occupation configurations, so the expansion runs on the
+# CONFIGURATION level — every configuration enters the channel-sum MPS as a
+# channel carrying its thermal weight, and every far-pair direction derived from
+# it enters as a ± folded pair (for saturated baths a single configuration
+# survives, which degenerates to the original sharp construction). The bond
+# embedding and the right-canonical finalization follow the `changebond!`
+# mechanics of the GrassmannMPS stack: bonds grow by direct-sum embedding and
+# the chain is finalized right-canonical with QR/LQ (never SVD, so the
+# zero-weight redundancy channels survive).
 #
 # The two-site TDVP sweep cannot seed the far-pair amplitudes (impurity ↔ bath
 # mode beyond the current pair) that the first H application creates on the
-# sharp insertion chains (Kohn–Santoro 2107.02807, App. C): those directions lie
+# insertion chains (Kohn–Santoro 2107.02807, App. C): those directions lie
 # outside the tangent space and are projected away. The cure here is an
 # EQUIVALENT expansion of the chain — |χ⟩ → |χ⟩ ⊕ |φ_j⟩ ⊕ (−|φ_j⟩) over direct
 # sums of bond sectors — which leaves the state exactly unchanged but makes
 # every far-pair direction a tangent-space generator, so the amplitudes seed at
 # O(δt·v) from the first step. With the expansion the truncation needs neither
-# the KS MinD crutch nor a large bond dimension (see TRUNC_EXPANDED in
-# timeevo.jl); directions without amplitude are simply truncated away.
+# the KS MinD crutch nor a large bond dimension (see the dynamic truncation in
+# gf_greater_lesser_t); directions without amplitude are simply truncated away.
 #
-# Implementation notes (all pinned by scripts/diag_expansion.jl dot checks):
+# Implementation notes (all pinned by dot checks):
 #   * TensorKit fused blocks are keyed by the single fused charge and their rows
 #     follow the canonical fusion-tree order (phys sector outer sorted × bond
 #     sector inner sorted × slot), NOT the channel construction order;
@@ -245,26 +258,25 @@ end
 _site_label(spec::ChainSpec, i::Int, occ::Charge) = occ
 
 """
-    expanded_state(spec, occs0, phis; base_vals = nothing, T = ComplexF64) -> DMRG.MPS
+    expanded_state(spec, channels; base_vals = nothing, T = ComplexF64) -> DMRG.MPS
 
-Represent the product basis state `occs0` (particle occupations) exactly as the
-channel sum |occs0⟩ ⊕ Σ_j (|φ_j⟩ ⊕ −|φ_j⟩): bond spaces are direct sums over
-channels (ψ first, then per φ a ± pair) and site tensors carry one block entry
-per channel in the canonical fusion-tree row order. Boundary coefficients fold
-into the first/last site tensor. `base_vals[i]` overrides the ψ entry at site i
-(the insertion amplitude on the impurity).
+Channel-sum MPS over the direct-sum bond sectors: `channels` is a vector of
+(per-site occupation tuple, amplitude) pairs and the state is Σ_c amp_c|occs_c⟩
+exactly. Boundary coefficients fold into the first/last site tensor.
+`base_vals[i]` multiplies every channel's entry at site i (insertion amplitudes).
+
+    expanded_state(spec, occs0, phis; base_vals = nothing, T = ComplexF64)
+
+Sharp wrapper: represent the product basis state `occs0` as the channel sum
+|occs0⟩ ⊕ Σ_j (|φ_j⟩ ⊕ −|φ_j⟩). All φ charge must conserve the total.
 """
-function expanded_state(spec::ChainSpec, occs0, phis; base_vals = nothing, T::Type{<:Number} = ComplexF64)
+function expanded_state(spec::ChainSpec, channels::Vector{<:Tuple{Vector{Charge},<:Real}};
+                        base_vals = nothing, T::Type{<:Number} = ComplexF64)
     L = length(spec.kinds)
     base_vals = base_vals === nothing ? ones(L) : base_vals
-    channels = [(collect(occs0), 1.0)]
-    for φ in phis
-        push!(channels, (collect(φ), 1.0))
-        push!(channels, (collect(φ), -1.0))
-    end
     nch = length(channels)
 
-    labels = [[_site_label(spec, i, ch[1][i]) for i in 1:L] for ch in channels]
+    labels = [[ch[1][i] for i in 1:L] for ch in channels]
     bondq = [Vector{Charge}(undef, L + 1) for _ in 1:nch]
     for c in 1:nch
         bondq[c][1] = (0, 0)
@@ -274,7 +286,7 @@ function expanded_state(spec::ChainSpec, occs0, phis; base_vals = nothing, T::Ty
     end
     total = bondq[1][L + 1]
     all(==(total), (bondq[c][L + 1] for c in 1:nch)) ||
-        throw(ArgumentError("expansion directions must conserve the total charge"))
+        throw(ArgumentError("expansion channels must conserve the total charge"))
 
     S = eltype(spec.spaces)
     bonds = Vector{S}(undef, L + 1)
@@ -286,36 +298,48 @@ function expanded_state(spec::ChainSpec, occs0, phis; base_vals = nothing, T::Ty
 
     Ws = Vector{Any}(undef, L)
     lookup = Dict(_sector((q1, q2)) => (q1, q2) for q1 in 0:L for q2 in 0:L)
+    cof(s) = haskey(lookup, s) ? lookup[s] : lookup[conj(s)]
     for i in 1:L
         W = zeros(T, bonds[i] ⊗ spec.spaces[i] ← bonds[i + 1])
-        Psectors = sort(collect(sectors(spec.spaces[i])))
-        Vsectors = sort(collect(sectors(bonds[i])))
+        # fusion-tree row base per (fused key, bond ql, phys p), derived from
+        # TensorKit's own enumeration — never hand-derive the canonical block
+        # row order (phys-outer vs bond-outer depends on the codomain split)
+        rowstarts = Dict{Tuple{Charge,Charge,Charge},Int}()
+        r = Dict{Charge,Int}()                # running row per fused-charge block
+        for (f1, f2) in fusiontrees(W)
+            k3 = (cof(f1.coupled), cof(f1.uncoupled[1]), cof(f1.uncoupled[2]))
+            haskey(rowstarts, k3) || begin
+                rowstarts[k3] = get(r, k3[1], 1)
+                r[k3[1]] = get(r, k3[1], 1) + dim(bonds[i], _sector(k3[2])) * dim(spec.spaces[i], _sector(k3[3]))
+            end
+        end
         for c in 1:nch
             g = _add(bondq[c][i], labels[c][i])
             g == bondq[c][i + 1] || error("charge mismatch at site $i channel $c")
             key = _sector(g)
-            psec = _sector(labels[c][i])
-            qlsec = _sector(bondq[c][i])
-            row = 1
-            for p2 in Psectors
-                p2 < psec || continue
-                for a2 in Vsectors
-                    _sector(_add(lookup[a2], lookup[p2])) == key && (row += dim(bonds[i], a2))
-                end
-            end
-            for a2 in Vsectors
-                (a2 < qlsec && _sector(_add(lookup[a2], lookup[psec])) == key) &&
-                    (row += dim(bonds[i], a2))
-            end
-            row += i == 1 ? 0 : count(cc -> _sector(bondq[cc][i]) == qlsec, 1:(c - 1))
+            ql = bondq[c][i]
+            slot = i == 1 ? 0 : count(cc -> _sector(bondq[cc][i]) == _sector(ql), 1:(c - 1))
+            row = rowstarts[(g, ql, labels[c][i])] + slot
             col = i == L ? 1 : 1 + count(cc -> _sector(bondq[cc][i + 1]) == key, 1:(c - 1))
-            val = channels[c][2] * (c == 1 ? base_vals[i] : 1.0)
+            # the channel amplitude folds into the FIRST site only (per-site
+            # factors would multiply to amp^L along the path)
+            val = (i == 1 ? channels[c][2] : 1.0) * base_vals[i]
             block(W, key)[row, col] = T(val)
         end
         Ws[i] = W
     end
     ψ = MPS(Vector{typeof(Ws[1])}(Ws))
     return _right_canonicalize!(ψ)
+end
+
+function expanded_state(spec::ChainSpec, occs0, phis; base_vals = nothing,
+                        T::Type{<:Number} = ComplexF64)
+    channels = [(collect(occs0), 1.0)]
+    for φ in phis
+        push!(channels, (collect(φ), 1.0))
+        push!(channels, (collect(φ), -1.0))
+    end
+    return expanded_state(spec, channels; base_vals, T)
 end
 
 # Bring sites 2..L to right-canonical form (QR-based, so the exactly-zero-weight
@@ -409,4 +433,142 @@ function expanded_shifted_state(x::Union{SISBD,SIDBD}, imp_up::Int, imp_down::In
     base_vals = ones(length(spec.kinds))
     base_vals[spec.imp_site] = amp
     return expanded_state(spec, occs0, phis; base_vals, T)
+end
+
+# ---------------- thermofield-double configuration-level expansion ----------------
+
+"""
+    _tfd_configs(x, imp_occs) -> Vector{Pair{Vector{Charge},Float64}}
+
+Occupation configurations of the thermofield-double fiducial with their thermal
+weights: every mode pair carries the spin configuration τ ∈ {(0,0),(1,0),(0,1),(1,1)}
+IDENTICALLY on its (a₁, a₂) branches with weight n^{τ↑+τ↓}(1−n)^{2−τ↑−τ↓}
+(the TFD double ⊗_σ(√(1−n)|00⟩ + √n|11⟩)), and the impurity carries `imp_occs`.
+Zero-weight configurations are dropped (the vacuum and saturated degeneracies).
+"""
+function _tfd_configs(x::Union{SISBD,SIDBD}, imp_occs::Charge)
+    spec = chain_spec(x)
+    L = length(spec.kinds)
+    pairs = _mode_pairs(x)
+    K = length(pairs)
+    out = Pair{Vector{Charge},Float64}[]
+    for τs in 0:(4^K - 1)           # two bits per pair: up filled / down filled
+        occs = Vector{Charge}(undef, L)
+        w = 1.0
+        for (k, (i1, i2, nk)) in enumerate(pairs)
+            τ = (τs >> (2(k - 1))) & 3
+            t = ((τ & 1), ((τ >> 1) & 1))
+            occs[i1] = t
+            occs[i2] = t
+            w *= nk^(t[1] + t[2]) * (1 - nk)^(2 - t[1] - t[2])
+        end
+        occs[spec.imp_site] = imp_occs
+        iszero(w) && continue
+        push!(out, occs => w)
+    end
+    return out
+end
+
+"total charge of an occupation configuration"
+_config_charge(occs) = foldl(_add, occs; init = (0, 0))
+
+"""
+    expanded_fiducial(x; imp_up=0, imp_down=0, T=ComplexF64) -> SectorSumState
+
+The thermofield-double fiducial as the EQUIVALENT expansion: per total-charge
+sector a channel-sum MPS of the sector's configurations (thermal weights,
+normalized) plus the far-pair ± pairs derived from every configuration —
+the state is exactly `fiducial_state(x)` but every far-pair direction is a
+tangent-space generator, so two-site TDVP seeds the impurity ↔ bath amplitudes
+beyond its current pair from the first step (KS 2107.02807 App. C). See the
+expansion section header for the construction.
+"""
+function expanded_fiducial(x::Union{SISBD,SIDBD}; imp_up::Int = 0, imp_down::Int = 0,
+                           T::Type{<:Number} = ComplexF64)
+    spec = chain_spec(x)
+    configs = _tfd_configs(x, (imp_up, imp_down))
+    isempty(configs) && error("no nonzero-weight fiducial configuration")
+    directions = far_pair_directions(spec)
+    groups = Dict{Charge,Vector{Tuple{Vector{Charge},Float64}}}()
+    wsum = Dict{Charge,Float64}()
+    for (occs, w) in configs
+        q = _config_charge(occs)
+        ch = get!(Vector{Tuple{Vector{Charge},Float64}}, groups, q)
+        push!(ch, (occs, sqrt(w)))
+        for φ in directions(occs)
+            push!(ch, (collect(φ), 1.0))
+            push!(ch, (collect(φ), -1.0))
+        end
+        wsum[q] = get(wsum, q, 0.0) + w
+    end
+    total = sum(values(wsum))
+    comps = DMRG.MPS[]
+    weights = Float64[]
+    charges = Charge[]
+    for q in sort(collect(keys(groups)))
+        ch = [(occs, amp / sqrt(wsum[q])) for (occs, amp) in groups[q]]
+        comp = expanded_state(spec, ch; T)
+        # normalize: the ± φ pairs cancel in the state but contribute 2·#φ to
+        # the norm, so divide the (right-canonical) norm carrier at site 1
+        nrm = sqrt(real(dot(comp, comp)))
+        comp[1] = comp[1] * (1 / nrm)
+        push!(comps, comp)
+        push!(weights, wsum[q] / total)
+        push!(charges, q)
+    end
+    return SectorSumState(comps, weights, charges)
+end
+
+"""
+    _expanded_inserted(x, ψ, spin, delta; imp_up=0, imp_down=0, T=ComplexF64) -> SectorSumState
+
+The inserted chain d^delta_σ|ψ₀⟩ as the equivalent expansion of the (finite-temperature)
+fiducial `ψ`: per charge sector a channel sum of the shifted configurations — each
+carrying the component's thermal weight, the operator-table amplitude and the
+mechanical Jordan–Wigner string of the insertion across the left part — plus the
+far-pair ± pairs of every shifted configuration. `nothing` when the insertion
+annihilates the state.
+"""
+function _expanded_inserted(x::Union{SISBD,SIDBD}, ψ::SectorSumState, spin::Symbol,
+                            delta::Int; imp_up::Int = 0, imp_down::Int = 0,
+                            T::Type{<:Number} = ComplexF64)
+    spec = chain_spec(x)
+    imp = spec.imp_site
+    q_in = (imp_up, imp_down)
+    q_out = spin === :up ? (q_in[1] + delta, q_in[2]) : (q_in[1], q_in[2] + delta)
+    ((0 <= q_out[1] <= 1) && (0 <= q_out[2] <= 1)) || return nothing
+    tbl = spin === :up ? (delta == 1 ? _adag_up : _a_up) : (delta == 1 ? _adag_down : _a_down)
+    amp = _amplitude(tbl, q_out, q_in)
+    amp === nothing && return nothing
+    q_d = q_out .- q_in
+    directions = far_pair_directions(spec)
+    configs = _tfd_configs(x, q_in)
+    wsum = Dict{Charge,Float64}()
+    for (occs, w) in configs
+        q = _config_charge(occs)
+        wsum[q] = get(wsum, q, 0.0) + w
+    end
+    comps = DMRG.MPS[]
+    for q in ψ.charges
+        W = get(wsum, q, 0.0)
+        iszero(W) && error("component charge $q carries no fiducial weight")
+        ch = Tuple{Vector{Charge},Float64}[]
+        for (occs, w) in configs
+            _config_charge(occs) == q || continue
+            shifted = copy(occs)
+            shifted[imp] = q_out
+            nleft = 0
+            for t in 1:(imp - 1)
+                nleft += occs[t][1] + occs[t][2]
+            end
+            a = sqrt(w / W) * amp * (isodd(nleft) ? -1.0 : 1.0)
+            push!(ch, (shifted, a))
+            for φ in directions(shifted)
+                push!(ch, (collect(φ), 1.0))
+                push!(ch, (collect(φ), -1.0))
+            end
+        end
+        push!(comps, expanded_state(spec, ch; T))
+    end
+    return SectorSumState(comps, copy(ψ.weights), [q .+ q_d for q in ψ.charges], ψ.phase)
 end

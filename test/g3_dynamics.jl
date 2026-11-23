@@ -107,9 +107,9 @@ end
 end
 
 @testset "G3 free dynamics: greater/lesser GF vs exact star evolution (sweep)" begin
-    # sweep-level regression gate: the finite-T TFD class carries the KS App-C
-    # projection defect (the d–a₂ coupling spans two sites; δt- and D-flat —
-    # the definition-level gate is the dense testset above)
+    # sweep-level gate: with the equivalent initial-state expansion the
+    # finite-β TFD class is exact to roundoff (the far-pair directions seed at
+    # first order); the plain sweep retains a small projection residue
     Random.seed!(31)
     ws = [-0.9, 0.5]; fs = [0.35, 0.55]
     β = 0.8; μ = 0.0; δt = 0.025
@@ -119,11 +119,14 @@ end
     # impurity empty: greater nontrivial, lesser zero
     x = SISBD(discretefermionicbath(ws, fs; β, μ); U = 0.0, εd = -0.3, J = 1.1)
     gt, lt = gf_greater_lesser_t(x, times; δt, trunc)
+    gt1, lt1 = gf_greater_lesser_t(x, times; δt, expand = true)
     hu = _star_h(x)
     ρ0 = _rho0(x; imp = 0.0)
     gtr, ltr = freefermions_greater_lesser(hu, ρ0, times, 1, 1)
-    @test maximum(abs.(gt .- 2 .* gtr)) < 0.3         # spin-summed, projection class
+    @test maximum(abs.(gt .- 2 .* gtr)) < 0.02         # spin-summed, projection residue
     @test maximum(abs.(lt)) < 1e-12                    # d annihilates the empty impurity
+    @test maximum(abs.(gt1 .- 2 .* gtr)) < 1e-6        # expansion: exact
+    @test maximum(abs.(lt1)) < 1e-12
 end
 
 @testset "G3 free dynamics: hot impurity channel structure" begin
@@ -138,11 +141,45 @@ end
     x = SISBD(discretefermionicbath(ws, fs; β, μ); U = 0.0, εd = -0.3, J = 1.1)
     hu = _star_h(x)
     gt2, lt2 = gf_greater_lesser_t(x, times; imp_up = 1, δt, trunc)
+    gt2e, lt2e = gf_greater_lesser_t(x, times; imp_up = 1, δt, expand = true)
     @test abs(gt2[1] + im) < 1e-8          # G^>(0) = −i·(1 − n_down)
     gtr_e, = freefermions_greater_lesser(hu, _rho0(x; imp = 0.0), times, 1, 1)
     _, ltr_f = freefermions_greater_lesser(hu, _rho0(x; imp = 1.0), times, 1, 1)
-    @test maximum(abs.(gt2 .- gtr_e)) < 0.3    # projection class (see the dense gate)
-    @test maximum(abs.(lt2 .- ltr_f)) < 0.3
+    @test maximum(abs.(gt2 .- gtr_e)) < 0.01    # projection residue (see the GF testset)
+    @test maximum(abs.(lt2 .- ltr_f)) < 0.01
+    @test maximum(abs.(gt2e .- gtr_e)) < 1e-6   # expansion: exact
+    @test maximum(abs.(lt2e .- ltr_f)) < 1e-6
+end
+
+@testset "G3 TFD equivalence: expanded fiducial/insertions ≡ plain construction" begin
+    # the equivalent initial-state expansion must represent EXACTLY the same
+    # states as the plain constructions: per-charge component overlaps and the
+    # inserted-chain overlaps (gt/lt, both spins) pin the channel-sum machinery
+    for (name, x, imp) in (("SISBD finite-β", SISBD(discretefermionicbath([-0.9, 0.5], [0.35, 0.55]; β = 0.8, μ = 0.0); U = 0.3, εd = -0.2), (0, 0)),
+                           ("SISBD finite-β hot", SISBD(discretefermionicbath([-0.9, 0.5], [0.35, 0.55]; β = 0.8, μ = 0.0); U = 0.3, εd = -0.2), (1, 0)),
+                           ("SIDBD vacuum-sea", SIDBD(discretefermionicvacuum([-0.8], [0.6]; μ = 0.0),
+                                                      discretefermionicvacuum([0.5], [0.45]; μ = 0.0); U = 1.0, εd = -0.3), (0, 0)),
+                           ("SIDBD finite-β", SIDBD(discretefermionicbath([-0.8], [0.6]; β = 0.8, μ = 0.0),
+                                                    discretefermionicbath([0.5], [0.45]; β = 0.8, μ = 0.0); U = 1.7, εd = -0.3), (0, 0)))
+        ψf = fiducial_state(x; imp_up = imp[1], imp_down = imp[2])
+        ψe = FermionicTCMPS.expanded_fiducial(x; imp_up = imp[1], imp_down = imp[2])
+        @test sort(ψf.charges) == sort(ψe.charges)
+        for q in ψf.charges
+            j = findfirst(==(q), ψf.charges)
+            k = findfirst(==(q), ψe.charges)
+            @test abs(ψf.weights[j] - ψe.weights[k]) < 1e-10
+            @test abs(dot(ψf.comps[j], ψe.comps[k]) - 1) < 1e-10
+        end
+        for spin in (:up, :down), delta in (1, -1)
+            χf = FermionicTCMPS._inserted_state(x, spin, delta; ψ = ψf, imp_up = imp[1], imp_down = imp[2])
+            χe = FermionicTCMPS._inserted_state(x, spin, delta; ψ = ψf, imp_up = imp[1], imp_down = imp[2], expand = true)
+            @test (χf === nothing) == (χe === nothing)
+            χf === nothing && continue
+            for (j, q) in enumerate(χf.charges)
+                @test abs(dot(χf.comps[j], χe.comps[j]) - 1) < 1e-10
+            end
+        end
+    end
 end
 
 @testset "G3 free dynamics: vacuum degeneracy (single mode, a2 decoupled)" begin
@@ -228,11 +265,9 @@ end
 end
 
 @testset "G3 free dynamics: sweep drift regression gate (finite-β TFD class)" begin
-    # the finite-β TFD sweep class carries the KS App-C projection defect (the
-    # d–a₂ coupling spans two sites): the error is δt- AND D-flat (verified:
-    # δt 0.05/0.025/0.0125 and D 256/1024 all give ≈ 0.16 at t = 0.4), so the
-    # old second-order convergence gate does not apply. This pins the drift
-    # magnitude; the definition-level gate is the dense testset above.
+    # the finite-β TFD plain sweep carries a small KS App-C projection residue
+    # (the d–a₂ coupling spans two sites); the equivalent initial-state
+    # expansion removes it — the expand leg pins exactness
     Random.seed!(36)
     ws = [-0.9, 0.5]; fs = [0.35, 0.55]
     β = 0.8
@@ -245,7 +280,9 @@ end
     exact = 2 .* exact
     g2, = gf_greater_lesser_t(x, times; δt = 0.02, trunc)
     e2 = abs(g2[1] - exact[1])
-    @test e2 < 0.25
+    @test e2 < 0.02
+    g3, = gf_greater_lesser_t(x, times; δt = 0.02, expand = true)
+    @test abs(g3[1] - exact[1]) < 1e-7
 end
 
 @testset "G3 free dynamics: double bath dense chain leg vs star frame" begin
@@ -277,11 +314,9 @@ end
 end
 
 @testset "G3 free dynamics: double bath sweep vs exact star evolution" begin
-    # KNOWN LIMITATION (this revision): the sector-sum sandwich estimator loses
-    # the high-charge components of the finite-β SIDBD fiducial under the sweep
-    # (the d†-apply collapses for the (4,·)/(2,·)-type sectors); the
-    # definition-level gate is the dense testset above (machine precision).
-    # Skipped until the component-wise apply is fixed.
+    # enabled after the component-wise d†-apply fix: the finite-β SIDBD
+    # sandwich runs on all charge sectors of the TFD fiducial; the plain sweep
+    # keeps a small projection residue, the expansion is exact
     Random.seed!(39)
     δt = 0.025
     times = collect(0.0:0.1:0.5)
@@ -289,7 +324,13 @@ end
     xl = discretefermionicbath([-0.8], [0.6]; β = 0.8, μ = 0.0)
     xr = discretefermionicbath([0.5], [0.45]; β = 0.8, μ = 0.0)
     x = SIDBD(xl, xr; U = 0.0, εd = -0.3, Jl = 1.0, Jr = 1.0)
-    @test_skip "SIDBD finite-β sweep sandwich: high-charge component apply broken (see the dense gate)"
+    gt, lt = gf_greater_lesser_t(x, times; δt, trunc)
+    gt1, lt1 = gf_greater_lesser_t(x, times; δt, expand = true)
+    gtr, ltr = freefermions_greater_lesser(_star_h(x), _rho0(x; imp = 0.0), times, 1, 1)
+    @test maximum(abs.(gt .- 2 .* gtr)) < 0.02
+    @test maximum(abs.(lt)) < 1e-12
+    @test maximum(abs.(gt1 .- 2 .* gtr)) < 1e-6
+    @test maximum(abs.(lt1)) < 1e-12
 end
 
 @testset "G3 vacuum degeneracy: a₂ branch frozen when μ below spectrum" begin
@@ -334,7 +375,7 @@ end
         end
     end
 
-    # the SIDBD sweep leg shares the known limitation of the GF testset above
-    # (high-charge component apply); the dense gate carries the definition-level
-    # verification
+    # the SIDBD sweep leg runs in the GF testsets above (the component-wise
+    # d†-apply handles all charge sectors since the tree-level rewrite); the
+    # dense gate carries the definition-level verification
 end
