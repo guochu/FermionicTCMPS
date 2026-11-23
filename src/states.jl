@@ -435,103 +435,167 @@ function expanded_shifted_state(x::Union{SISBD,SIDBD}, imp_up::Int, imp_down::In
     return expanded_state(spec, occs0, phis; base_vals, T)
 end
 
-# ---------------- thermofield-double configuration-level expansion ----------------
-
-"""
-    _tfd_configs(x, imp_occs) -> Vector{Pair{Vector{Charge},Float64}}
-
-Occupation configurations of the thermofield-double fiducial with their thermal
-weights: every mode pair carries the spin configuration τ ∈ {(0,0),(1,0),(0,1),(1,1)}
-IDENTICALLY on its (a₁, a₂) branches with weight n^{τ↑+τ↓}(1−n)^{2−τ↑−τ↓}
-(the TFD double ⊗_σ(√(1−n)|00⟩ + √n|11⟩)), and the impurity carries `imp_occs`.
-Zero-weight configurations are dropped (the vacuum and saturated degeneracies).
-"""
-function _tfd_configs(x::Union{SISBD,SIDBD}, imp_occs::Charge)
-    spec = chain_spec(x)
-    L = length(spec.kinds)
-    pairs = _mode_pairs(x)
-    K = length(pairs)
-    out = Pair{Vector{Charge},Float64}[]
-    for τs in 0:(4^K - 1)           # two bits per pair: up filled / down filled
-        occs = Vector{Charge}(undef, L)
-        w = 1.0
-        for (k, (i1, i2, nk)) in enumerate(pairs)
-            τ = (τs >> (2(k - 1))) & 3
-            t = ((τ & 1), ((τ >> 1) & 1))
-            occs[i1] = t
-            occs[i2] = t
-            w *= nk^(t[1] + t[2]) * (1 - nk)^(2 - t[1] - t[2])
-        end
-        occs[spec.imp_site] = imp_occs
-        iszero(w) && continue
-        push!(out, occs => w)
-    end
-    return out
-end
+# ---------------- thermofield-double initial-state expansion ----------------
 
 "total charge of an occupation configuration"
 _config_charge(occs) = foldl(_add, occs; init = (0, 0))
 
 """
-    expanded_fiducial(x; imp_up=0, imp_down=0, T=ComplexF64) -> SectorSumState
+    _top_configs(x, imp_occs; maxn, minweight) -> Vector{Pair{Vector{Charge},Float64}}
+
+Best-first (descending-weight) enumeration of the thermofield-double fiducial
+configurations WITHOUT the full 4^K sweep: a k-best-product walk over the
+per-pair spin choices (each pair carries τ ∈ {(0,0),(1,0),(0,1),(1,1)}
+identically on its (a₁, a₂) branches with weight n^{τ↑+τ↓}(1−n)^{2−τ↑−τ↓}, the
+impurity carrying `imp_occs`). Stops after `maxn` configurations or when the
+weight falls below `minweight`.
+"""
+function _top_configs(x::Union{SISBD,SIDBD}, imp_occs::Charge; maxn::Int, minweight::Float64)
+    spec = chain_spec(x)
+    L = length(spec.kinds)
+    pairs = _mode_pairs(x)
+    K = length(pairs)
+    isempty(pairs) && return Pair{Vector{Charge},Float64}[]
+    choices = [[(t, nk^(t[1] + t[2]) * (1 - nk)^(2 - t[1] - t[2]))
+                for t in ((0, 0), (1, 0), (0, 1), (1, 1))] for (_, _, nk) in pairs]
+    foreach(v -> sort!(v; by = p -> -p[2]), choices)
+    occsof(code) = begin
+        o = Vector{Charge}(undef, L)
+        for (k, (i1, i2, _)) in enumerate(pairs)
+            t = choices[k][code[k]][1]
+            o[i1] = t
+            o[i2] = t
+        end
+        o[spec.imp_site] = imp_occs
+        o
+    end
+    weightof(code) = prod(choices[k][code[k]][2] for k in 1:K)
+    bestcode = ones(Int, K)
+    out = Pair{Vector{Charge},Float64}[]
+    pending = Tuple{Float64,Vector{Int}}[(-weightof(bestcode), bestcode)]
+    seen = Set{Vector{Int}}([bestcode])
+    while !isempty(pending) && length(out) < maxn
+        sort!(pending; by = e -> e[1])
+        w, code = popfirst!(pending)
+        (-w < minweight) && break
+        push!(out, occsof(code) => -w)
+        for k in 1:K, j in (code[k] + 1):length(choices[k])
+            code2 = copy(code)
+            code2[k] = j
+            (code2 in seen) && continue
+            push!(seen, code2)
+            push!(pending, (-weightof(code2), code2))
+        end
+    end
+    return out
+end
+
+# channel budget of one expanded component: the bond dimension of the channel
+# sum is bounded by the number of channels (same-charge slots merge), so the
+# cap on the channels caps the bonds; the boundary bond stays 1-dimensional.
+
+"""
+    expanded_fiducial(x; imp_up=0, imp_down=0, D=EXPANDED_DBUDGET, T=ComplexF64) -> SectorSumState
 
 The thermofield-double fiducial as the EQUIVALENT expansion: per total-charge
 sector a channel-sum MPS of the sector's configurations (thermal weights,
-normalized) plus the far-pair ± pairs derived from every configuration —
-the state is exactly `fiducial_state(x)` but every far-pair direction is a
-tangent-space generator, so two-site TDVP seeds the impurity ↔ bath amplitudes
-beyond its current pair from the first step (KS 2107.02807 App. C). See the
-expansion section header for the construction.
+normalized) plus the far-pair ± pairs derived from them — the state is exactly
+`fiducial_state(x)` but every far-pair direction is a tangent-space generator,
+so two-site TDVP seeds the impurity ↔ bath amplitudes beyond its current pair
+from the first step (KS 2107.02807 App. C).
+
+The channels are admitted best-first (descending thermal weight, k-best-product
+walk — never the full 4^K enumeration) under the bond budget `D`:
+configurations first (they carry the state weight), then two ± slots per
+seeding direction while the budget allows. Dropped weight only degrades the
+truncated state controllably (renormalized within the admitted set); dropped
+directions delay their low-weight amplitudes.
 """
 function expanded_fiducial(x::Union{SISBD,SIDBD}; imp_up::Int = 0, imp_down::Int = 0,
-                           T::Type{<:Number} = ComplexF64)
+                           D::Int = EXPANDED_DBUDGET, T::Type{<:Number} = ComplexF64)
     spec = chain_spec(x)
-    configs = _tfd_configs(x, (imp_up, imp_down))
+    configs = _top_configs(x, (imp_up, imp_down); maxn = 4096, minweight = 1.0e-12)
     isempty(configs) && error("no nonzero-weight fiducial configuration")
+    nmax = max(1, D - 1)            # channel slots per internal bond
     directions = far_pair_directions(spec)
-    groups = Dict{Charge,Vector{Tuple{Vector{Charge},Float64}}}()
-    wsum = Dict{Charge,Float64}()
+    groups = Dict{Charge,Vector{Tuple{Vector{Charge},Float64,Bool,Float64}}}()
+    total = 0.0
     for (occs, w) in configs
         q = _config_charge(occs)
-        ch = get!(Vector{Tuple{Vector{Charge},Float64}}, groups, q)
-        push!(ch, (occs, sqrt(w)))
+        ch = get!(Vector{Tuple{Vector{Charge},Float64,Bool,Float64}}, groups, q)
+        total += w
+        push!(ch, (occs, sqrt(w), true, w))
         for φ in directions(occs)
-            push!(ch, (collect(φ), 1.0))
-            push!(ch, (collect(φ), -1.0))
+            φc = collect(φ)
+            φc ∈ (o for (o, _, _2, _w) in ch) && continue
+            push!(ch, (φc, 1.0, false, 0.0))
+            push!(ch, (φc, -1.0, false, 0.0))
         end
-        wsum[q] = get(wsum, q, 0.0) + w
     end
-    total = sum(values(wsum))
     comps = DMRG.MPS[]
     weights = Float64[]
     charges = Charge[]
     for q in sort(collect(keys(groups)))
-        ch = [(occs, amp / sqrt(wsum[q])) for (occs, amp) in groups[q]]
-        comp = expanded_state(spec, ch; T)
-        # normalize: the ± φ pairs cancel in the state but contribute 2·#φ to
-        # the norm, so divide the (right-canonical) norm carrier at site 1
+        ch = _budget_channels(groups[q], nmax)
+        Wadm = sum(w for (_, _, iscfg, w) in ch if iscfg)
+        channels = [(occs, iscfg ? amp / sqrt(Wadm) : amp) for (occs, amp, iscfg, w) in ch]
+        comp = expanded_state(spec, channels; T)
+        # normalizes truncated components (a no-op while nothing is dropped)
         nrm = sqrt(real(dot(comp, comp)))
         comp[1] = comp[1] * (1 / nrm)
         push!(comps, comp)
-        push!(weights, wsum[q] / total)
+        push!(weights, Wadm / total)
         push!(charges, q)
     end
     return SectorSumState(comps, weights, charges)
 end
 
+# budget filter of one sector's channel stream: the configuration channels stay
+# unconditionally (they carry the state weight, renormalized over the admitted
+# set); the ± seeding pairs fill the remaining slots in stream order, dropped
+# as whole pairs
+function _budget_channels(ch::Vector{Tuple{Vector{Charge},Float64,Bool,Float64}}, nmax::Int)
+    out = Tuple{Vector{Charge},Float64,Bool,Float64}[]
+    pairs = Tuple{Int,Int}[]
+    nkept = 0
+    i = 1
+    while i ≤ length(ch)
+        (occs, amp, iscfg, w) = ch[i]
+        if iscfg
+            # configurations in stream order = descending thermal weight: admit
+            # while the budget allows, renormalizing the truncated state
+            nkept < nmax || break
+            push!(out, ch[i])
+            nkept += 1
+            i += 1
+        else
+            push!(pairs, (i, i + 1))
+            i += 2
+        end
+    end
+    for (i1, i2) in pairs          # ± pairs fill the remaining slots, stream order
+        nkept + 2 ≤ nmax || break
+        push!(out, ch[i1])
+        push!(out, ch[i2])
+        nkept += 2
+    end
+    return out
+end
+
 """
-    _expanded_inserted(x, ψ, spin, delta; imp_up=0, imp_down=0, T=ComplexF64) -> SectorSumState
+    _expanded_inserted(x, ψ, spin, delta; imp_up=0, imp_down=0, D=EXPANDED_DBUDGET, T) -> SectorSumState
 
 The inserted chain d^delta_σ|ψ₀⟩ as the equivalent expansion of the (finite-temperature)
 fiducial `ψ`: per charge sector a channel sum of the shifted configurations — each
 carrying the component's thermal weight, the operator-table amplitude and the
 mechanical Jordan–Wigner string of the insertion across the left part — plus the
-far-pair ± pairs of every shifted configuration. `nothing` when the insertion
-annihilates the state.
+far-pair ± pairs of the shifted configurations, all admitted best-first under
+the bond budget `D` exactly as in `expanded_fiducial`. `nothing` when the
+insertion annihilates the state.
 """
 function _expanded_inserted(x::Union{SISBD,SIDBD}, ψ::SectorSumState, spin::Symbol,
                             delta::Int; imp_up::Int = 0, imp_down::Int = 0,
-                            T::Type{<:Number} = ComplexF64)
+                            D::Int = EXPANDED_DBUDGET, T::Type{<:Number} = ComplexF64)
     spec = chain_spec(x)
     imp = spec.imp_site
     q_in = (imp_up, imp_down)
@@ -541,8 +605,9 @@ function _expanded_inserted(x::Union{SISBD,SIDBD}, ψ::SectorSumState, spin::Sym
     amp = _amplitude(tbl, q_out, q_in)
     amp === nothing && return nothing
     q_d = q_out .- q_in
+    nmax = max(1, D - 1)            # channel slots per internal bond
     directions = far_pair_directions(spec)
-    configs = _tfd_configs(x, q_in)
+    configs = _top_configs(x, q_in; maxn = 4096, minweight = 1.0e-12)
     wsum = Dict{Charge,Float64}()
     for (occs, w) in configs
         q = _config_charge(occs)
@@ -552,23 +617,32 @@ function _expanded_inserted(x::Union{SISBD,SIDBD}, ψ::SectorSumState, spin::Sym
     for q in ψ.charges
         W = get(wsum, q, 0.0)
         iszero(W) && error("component charge $q carries no fiducial weight")
-        ch = Tuple{Vector{Charge},Float64}[]
+        raw = Tuple{Vector{Charge},Float64,Bool,Float64}[]
+        admitted = Vector{Vector{Charge}}()
         for (occs, w) in configs
             _config_charge(occs) == q || continue
             shifted = copy(occs)
             shifted[imp] = q_out
-            nleft = 0
-            for t in 1:(imp - 1)
-                nleft += occs[t][1] + occs[t][2]
-            end
+            nleft = sum(occs[t][1] + occs[t][2] for t in 1:(imp - 1); init = 0)
             a = sqrt(w / W) * amp * (isodd(nleft) ? -1.0 : 1.0)
-            push!(ch, (shifted, a))
+            push!(raw, (shifted, a, true, w))
+            push!(admitted, shifted)
             for φ in directions(shifted)
-                push!(ch, (collect(φ), 1.0))
-                push!(ch, (collect(φ), -1.0))
+                φc = collect(φ)
+                φc ∈ (o for (o, _, _2, _w) in raw) && continue
+                push!(raw, (φc, 1.0, false, 0.0))
+                push!(raw, (φc, -1.0, false, 0.0))
             end
         end
-        push!(comps, expanded_state(spec, ch; T))
+        ch = _budget_channels(raw, nmax)
+        Wadm = sum(w for (_, _, iscfg, w) in ch if iscfg)
+        rescale = sqrt(W / Wadm)
+        channels = [(occs, iscfg ? amp * rescale : amp) for (occs, amp, iscfg, w) in ch]
+        comp = expanded_state(spec, channels; T)
+        # normalizes truncated components (a no-op while nothing is dropped)
+        nrm = sqrt(real(dot(comp, comp)))
+        comp[1] = comp[1] * (1 / nrm)
+        push!(comps, comp)
     end
     return SectorSumState(comps, copy(ψ.weights), [q .+ q_d for q in ψ.charges], ψ.phase)
 end

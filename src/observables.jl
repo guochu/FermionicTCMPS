@@ -162,15 +162,17 @@ contribute zero. `times` must be sorted, non-negative and lie on the δt grid.
 
 `expand = true` starts every chain from its EQUIVALENT expansion (|χ⟩ ⊕ |φ⟩ ⊕
 (−|φ⟩), see `expanded_fiducial`), which makes the far-pair amplitudes the
-sweep cannot seed (bath modes beyond its window) first-order in the dynamics;
-for finite-temperature baths the expansion runs per fiducial configuration
-(`_tfd_configs`). The truncation then defaults to a bond cap covering the
-expanded chains (zero redundancy directions are truncated away, add_back = 0);
-without the expansion the KS MinD default applies.
+sweep cannot seed (bath modes beyond its window) first-order in the dynamics.
+The seeding directions are admitted best-first over the fiducial
+configurations under the bond budget `expand_D` (the states stay exact, only
+low-weight directions are dropped). The sweep truncation then defaults to a
+bond cap covering the expanded chains (zero redundancy directions are
+truncated away, add_back = 0); without the expansion the KS MinD default
+applies.
 """
 function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real};
                              imp_up::Int = 0, imp_down::Int = 0, δt::Real,
-                             expand::Bool = false,
+                             expand::Bool = false, expand_D::Int = EXPANDED_DBUDGET,
                              trunc::Union{Nothing,DMRG.TruncationDimCutoff} = nothing)
     h = mpo(x)
 
@@ -180,7 +182,8 @@ function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real
     (issorted(times) && first(times) ≥ 0) || throw(ArgumentError("times must be sorted and non-negative"))
 
     spec = chain_spec(x)
-    ψ = expand ? expanded_fiducial(x; imp_up, imp_down) : fiducial_state(x; imp_up, imp_down)
+    ψ = expand ? expanded_fiducial(x; imp_up, imp_down, D = expand_D) :
+        fiducial_state(x; imp_up, imp_down)
     dmpo = Dict(:up => site_operator_mpo(spec.spaces, spec.imp_site, _a_up),
                 :down => site_operator_mpo(spec.spaces, spec.imp_site, _a_down))
 
@@ -188,13 +191,13 @@ function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real
     inserts = NamedTuple{(:kind, :weights, :comps, :caches, :sign, :spin, :qeta),
                          Tuple{Symbol,Any,Any,Any,Float64,Symbol,Any}}[]
     for spin in (:up, :down)
-        χ = _inserted_state(x, spin, 1; ψ, imp_up, imp_down, expand)
+        χ = _inserted_state(x, spin, 1; ψ, imp_up, imp_down, expand, D = expand_D)
         if χ !== nothing
             push!(inserts, (kind = :gt, weights = χ.weights, comps = χ.comps,
                             caches = [environments(h, c) for c in χ.comps],
                             sign = χ.phase * ψ.phase, spin = spin, qeta = (imp_up, imp_down)))
         end
-        η = _inserted_state(x, spin, -1; ψ, imp_up, imp_down, expand)
+        η = _inserted_state(x, spin, -1; ψ, imp_up, imp_down, expand, D = expand_D)
         if η !== nothing
             # η's impurity occupations are the annihilated ones
             qeta = spin === :up ? (imp_up - 1, imp_down) : (imp_up, imp_down - 1)
@@ -250,11 +253,11 @@ end
 
 "insertion d^delta_σ|ψ₀⟩ of the fiducial state; nothing when the insertion annihilates it.
 The non-expand route shifts each fiducial component mechanically (exact per-configuration
-Jordan–Wigner strings), the expand route rebuilds the insertion as an equivalent
-channel-sum expansion (see `expanded_state`)."
+Jordan–Wigner strings), the expand route additionally overlays the far-pair ± seeding
+directions under the bond budget `D` (see `expanded_fiducial`)."
 function _inserted_state(x::Union{SISBD,SIDBD}, spin::Symbol, delta::Int;
                          ψ::SectorSumState, imp_up::Int = 0, imp_down::Int = 0,
-                         expand::Bool = false)
+                         expand::Bool = false, D::Int = EXPANDED_DBUDGET)
     q_in = (imp_up, imp_down)
     q_out = spin === :up ? (q_in[1] + delta, q_in[2]) : (q_in[1], q_in[2] + delta)
     ((0 <= q_out[1] <= 1) && (0 <= q_out[2] <= 1)) || return nothing
@@ -263,7 +266,7 @@ function _inserted_state(x::Union{SISBD,SIDBD}, spin::Symbol, delta::Int;
     amp === nothing && return nothing
     q_d = q_out .- q_in
     if expand
-        return _expanded_inserted(x, ψ, spin, delta; imp_up, imp_down)
+        return _expanded_inserted(x, ψ, spin, delta; imp_up, imp_down, D)
     end
     comps = [_apply_dag(x, c, spin, delta; imp_up, imp_down) for c in ψ.comps]
     return SectorSumState(comps, copy(ψ.weights), [q .+ q_d for q in ψ.charges], ψ.phase)

@@ -180,6 +180,21 @@ end
             end
         end
     end
+    # the bond budget: with a tight D the seeding directions are capped (the
+    # expanded bonds stay bounded) while the state remains EXACTLY the plain
+    # component — the ± pairs cancel in the vector regardless of which
+    # directions are admitted
+    let x = SISBD(discretefermionicbath([-0.9, 0.5], [0.35, 0.55]; β = 0.8, μ = 0.0); U = 0.3, εd = -0.2)
+        ψf = fiducial_state(x)
+        for D in (8, 16)
+            ψe = FermionicTCMPS.expanded_fiducial(x; D)
+            @test maximum(FermionicTCMPS._maxbond, ψe.comps) <= D + 1
+            for (j, q) in enumerate(ψf.charges)
+                k = findfirst(==(q), ψe.charges)
+                @test abs(dot(ψf.comps[j], ψe.comps[k]) - 1) < 1e-10
+            end
+        end
+    end
 end
 
 @testset "G3 free dynamics: vacuum degeneracy (single mode, a2 decoupled)" begin
