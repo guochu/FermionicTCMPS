@@ -748,7 +748,7 @@ function _seed_directions(x::Union{SISBD,SIDBD}, imp_occs::Charge;
     end
     # depth tier: the per-configuration φ family, config weight × coupling first
     2 * length(out) ≥ 2 * npairs && return out
-    configs = _top_configs(x, imp_occs; maxn = 65536, minweight = 1.0e-14)
+    configs = _top_configs(x, imp_occs; maxn = min(65536, 2 * npairs), minweight = 1.0e-14)
     for (occs, w) in configs, (σ, s, filling, coef) in cand
         length(out) ≥ npairs && return out
         (filling ? imp_target[σ] == 0 : imp_target[σ] == 1) || continue
