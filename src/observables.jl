@@ -279,18 +279,28 @@ function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real
             foreach(ins -> foreach(c -> sweep!(c, alg), ins.caches), inserts)
         end
         prev = n
-        ψt = [c.state for c in ψcaches]
+        # the evolved chains' final bonds may carry per-sector multiplicity slots
+        # (sweep splitting on top of the expansion channels): collapse to the
+        # canonical charge labels, and restrict both sandwich sides to the common
+        # charge set (marginal sectors truncated on one side only contribute noise)
+        ψt = [_collapse_final(c.state) for c in ψcaches]
         for ins in inserts
-            χt = [c.state for c in ins.caches]
+            χt = [_collapse_final(c.state) for c in ins.caches]
             # ⟨ψ|d|χ⟩ = ⟨d†ψ|χ⟩ — same-charge overlaps of mechanically shifted states
             if ins.kind === :gt
-                acc = sum(w * dot(_apply_dag(x, ψt[j], ins.spin, 1; imp_up, imp_down), χt[j])
-                          for (j, w) in enumerate(ins.weights))
+                acc = sum(w * begin
+                    bra = _apply_dag(x, ψt[j], ins.spin, 1; imp_up, imp_down)
+                    common = intersect(_final_charges(bra), _final_charges(χt[j]))
+                    dot(_restrict_final(bra, common), _restrict_final(χt[j], common))
+                end for (j, w) in enumerate(ins.weights))
                 gt[i] += -im * ins.sign * acc
             else
-                acc = sum(w * dot(_apply_dag(x, χt[j], ins.spin, 1;
-                                              imp_up = ins.qeta[1], imp_down = ins.qeta[2]), ψt[j])
-                          for (j, w) in enumerate(ins.weights))
+                acc = sum(w * begin
+                    bra = _apply_dag(x, χt[j], ins.spin, 1;
+                                     imp_up = ins.qeta[1], imp_down = ins.qeta[2])
+                    common = intersect(_final_charges(bra), _final_charges(ψt[j]))
+                    dot(_restrict_final(bra, common), _restrict_final(ψt[j], common))
+                end for (j, w) in enumerate(ins.weights))
                 lt[i] += im * ins.sign * acc
             end
         end

@@ -153,45 +153,72 @@ end
 
 @testset "G3 TFD equivalence: expanded fiducial/insertions ≡ plain construction" begin
     # the equivalent initial-state expansion must represent EXACTLY the same
-    # states as the plain constructions: per-charge component overlaps and the
-    # inserted-chain overlaps (gt/lt, both spins) pin the channel-sum machinery
+    # states as the plain constructions. The expanded state is ONE multi-sector
+    # MPS (base channel + ± seeding pairs); the per-charge comparison splits it
+    # back into sector components and pins overlaps, weights and impurity
+    # observables against the plain per-charge construction.
     for (name, x, imp) in (("SISBD finite-β", SISBD(discretefermionicbath([-0.9, 0.5], [0.35, 0.55]; β = 0.8, μ = 0.0); U = 0.3, εd = -0.2), (0, 0)),
                            ("SISBD finite-β hot", SISBD(discretefermionicbath([-0.9, 0.5], [0.35, 0.55]; β = 0.8, μ = 0.0); U = 0.3, εd = -0.2), (1, 0)),
                            ("SIDBD vacuum-sea", SIDBD(discretefermionicvacuum([-0.8], [0.6]; μ = 0.0),
                                                       discretefermionicvacuum([0.5], [0.45]; μ = 0.0); U = 1.0, εd = -0.3), (0, 0)),
                            ("SIDBD finite-β", SIDBD(discretefermionicbath([-0.8], [0.6]; β = 0.8, μ = 0.0),
                                                     discretefermionicbath([0.5], [0.45]; β = 0.8, μ = 0.0); U = 1.7, εd = -0.3), (0, 0)))
+        L = length(FermionicTCMPS.chain_spec(x).kinds)
+        lookup = Dict(FermionicTCMPS._sector((q1, q2)) => (q1, q2) for q1 in 0:(2L) for q2 in 0:(2L))
         ψf = fiducial_state(x; imp_up = imp[1], imp_down = imp[2])
         ψe = FermionicTCMPS.expanded_fiducial(x; imp_up = imp[1], imp_down = imp[2])
-        @test sort(ψf.charges) == sort(ψe.charges)
+        @test length(ψe.comps) == 1
+        @test ψe.weights == [1.0]
+        @test abs(sqrt(real(dot(ψe.comps[1], ψe.comps[1]))) - 1) < 1e-10
+        split_e = FermionicTCMPS._split_sectors(ψe.comps[1], lookup, ComplexF64)
+        @test sort(split_e.charges) == sort(ψf.charges)
         for q in ψf.charges
             j = findfirst(==(q), ψf.charges)
-            k = findfirst(==(q), ψe.charges)
-            @test abs(ψf.weights[j] - ψe.weights[k]) < 1e-10
-            @test abs(dot(ψf.comps[j], ψe.comps[k]) - 1) < 1e-10
+            k = findfirst(==(q), split_e.charges)
+            @test abs(split_e.weights[k] - ψf.weights[j]) < 1e-10
+            @test abs(dot(ψf.comps[j], split_e.comps[k]) - 1) < 1e-10
         end
+        # impurity observables: charge-weighted plain vs the single expanded chain
+        nd = occupation_op(x; spin = :up)
+        @test abs(real(expectationvalue(nd, ψe)) -
+                  real(expectationvalue(nd, ψf))) < 1e-10
         for spin in (:up, :down), delta in (1, -1)
             χf = FermionicTCMPS._inserted_state(x, spin, delta; ψ = ψf, imp_up = imp[1], imp_down = imp[2])
             χe = FermionicTCMPS._inserted_state(x, spin, delta; ψ = ψf, imp_up = imp[1], imp_down = imp[2], expand = true)
             @test (χf === nothing) == (χe === nothing)
             χf === nothing && continue
-            for (j, q) in enumerate(χf.charges)
-                @test abs(dot(χf.comps[j], χe.comps[j]) - 1) < 1e-10
+            nf = sqrt(sum(w * real(dot(c, c)) for (w, c) in zip(χf.weights, χf.comps)))
+            ne = sqrt(real(dot(χe.comps[1], χe.comps[1])))
+            @test abs(nf - ne) < 1e-10
+            split_chi = FermionicTCMPS._split_sectors(χe.comps[1], lookup, ComplexF64)
+            @test sort(split_chi.charges) == sort(χf.charges)
+            for q in χf.charges
+                j = findfirst(==(q), χf.charges)
+                k = findfirst(==(q), split_chi.charges)
+                cj = χf.comps[j]
+                nj = sqrt(real(dot(cj, cj)))
+                @test nj > 1e-12
+                @test abs(dot(cj / nj, split_chi.comps[k]) - 1) < 1e-10
             end
         end
     end
-    # the bond budget: with a tight D the seeding directions are capped (the
-    # expanded bonds stay bounded) while the state remains EXACTLY the plain
-    # component — the ± pairs cancel in the vector regardless of which
-    # directions are admitted
+    # the bond budget: the ADDED direction slots respect max(EXPANDED_MIN_DIR, D −
+    # basebond) while the state remains EXACTLY the plain construction — the ±
+    # pairs cancel in the vector regardless of which directions are admitted
     let x = SISBD(discretefermionicbath([-0.9, 0.5], [0.35, 0.55]; β = 0.8, μ = 0.0); U = 0.3, εd = -0.2)
+        L = length(FermionicTCMPS.chain_spec(x).kinds)
+        lookup = Dict(FermionicTCMPS._sector((q1, q2)) => (q1, q2) for q1 in 0:(2L) for q2 in 0:(2L))
         ψf = fiducial_state(x)
-        for D in (8, 16)
+        basechan = FermionicTCMPS._ExpansionChannel(FermionicTCMPS._fiducial_entries(x, 0, 0), 1.0)
+        basebond = maximum(length(FermionicTCMPS._channel_bonds(basechan.entries)[i]) for i in 2:L)
+        for D in (16, 64)
             ψe = FermionicTCMPS.expanded_fiducial(x; D)
-            @test maximum(FermionicTCMPS._maxbond, ψe.comps) <= D + 1
+            npairs = max(FermionicTCMPS.EXPANDED_MIN_DIR, D - basebond) ÷ 2
+            @test maximum(FermionicTCMPS._maxbond, ψe.comps) <= basebond + 2 * npairs
+            split_e = FermionicTCMPS._split_sectors(ψe.comps[1], lookup, ComplexF64)
             for (j, q) in enumerate(ψf.charges)
-                k = findfirst(==(q), ψe.charges)
-                @test abs(dot(ψf.comps[j], ψe.comps[k]) - 1) < 1e-10
+                k = findfirst(==(q), split_e.charges)
+                @test abs(dot(ψf.comps[j], split_e.comps[k]) - 1) < 1e-10
             end
         end
     end
