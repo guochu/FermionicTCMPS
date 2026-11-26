@@ -147,7 +147,7 @@ function _shifted_space(sp, q::Charge, lookup)
 end
 
 """
-    gf_greater_lesser_t(x, times; imp_up=0, imp_down=0, δt, trunc, expand=false) -> (gt, lt)
+    gf_greater_lesser_t(x, times; imp_up=0, imp_down=0, δt, trunc) -> (gt, lt)
 
 Spin-summed real-time impurity Green's function of the thermo-field state,
 G^>(t) = −i⟨d(t)d†(0)⟩ and G^<(t) = i⟨d†(0)d(t)⟩.
@@ -160,54 +160,38 @@ G^<(t) = +i·⟨η(t)| d_σ |ψ(t)⟩ with η = d|ψ₀⟩,
 evolved in lockstep. Spin channels whose insertion annihilates the state
 contribute zero. `times` must be sorted, non-negative and lie on the δt grid.
 
-`expand = true` starts every chain from its EQUIVALENT expansion (|χ⟩ ⊕ |φ⟩ ⊕
-(−|φ⟩), see `expanded_fiducial`), which makes the far-pair amplitudes the
-sweep cannot seed (bath modes beyond its window) first-order in the dynamics.
-The seeding directions are admitted best-first over the fiducial
-configurations under the bond budget `expand_D` (the states stay exact, only
-low-weight directions are dropped). The sweep truncation then defaults to a
-bond cap covering the expanded chains (zero redundancy directions are
-truncated away, add_back = 0); without the expansion the KS MinD default
-applies.
-
-Alternatively `warmup = :WI` or `:WII` seeds the chains WITHOUT the expansion:
-WARMUP_STEPS sparse-evolution applications (Zaletel 1407.1832) at δt/warmup_steps
-cover the first coarse step on the unexpanded sharp fiducial — the sparse
-exponential acts on the full chain and populates the far-pair amplitudes —
-after which the compressed chains hand over to the TDVP sweeps.
+The sweep is the plain route: sharp thermofield-double fiducial, mechanical
+insertions, two-site TDVP with the KS minimum-bond crutch (`add_back = MIND`).
+The two-site projection seeds the far-pair amplitudes only at O(δt·v), so the
+scheme is effectively FIRST order in δt (documented TDVP2 projection defect;
+class-wise error budgets: vacuum ≈ exact, finite-β ~1e-3–5e-3, sharp sea ~1e-2).
 """
 function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real};
                              imp_up::Int = 0, imp_down::Int = 0, δt::Real,
-                             expand::Bool = false, expand_D::Int = EXPANDED_DBUDGET,
-                             trunc::Union{Nothing,DMRG.TruncationDimCutoff} = nothing,
-                             warmup::Symbol = :none, warmup_steps::Int = 10)
+                             trunc::Union{Nothing,DMRG.TruncationDimCutoff} = nothing)
     h = mpo(x)
 
     steps = round.(Int, times ./ δt)
     all(abs(s * δt - t) ≤ 1e-8 * max(1.0, abs(t)) for (s, t) in zip(steps, times)) ||
         throw(ArgumentError("times must lie on the δt grid"))
     (issorted(times) && first(times) ≥ 0) || throw(ArgumentError("times must be sorted and non-negative"))
-    (warmup === :none || warmup === :WI || warmup === :WII) ||
-        throw(ArgumentError("warmup must be :none, :WI or :WII"))
 
     spec = chain_spec(x)
-    ψ = expand ? expanded_fiducial(x; imp_up, imp_down, D = expand_D) :
-        fiducial_state(x; imp_up, imp_down)
+    ψ = fiducial_state(x; imp_up, imp_down)
     dmpo = Dict(:up => site_operator_mpo(spec.spaces, spec.imp_site, _a_up),
                 :down => site_operator_mpo(spec.spaces, spec.imp_site, _a_down))
 
-    # Any-typed: the warm-up may rebuild the caches with a widened .s container
     ψcaches = Any[environments(h, c) for c in ψ.comps]   # sweep! mutates ψ.comps in place
     inserts = NamedTuple{(:kind, :weights, :comps, :caches, :sign, :spin, :qeta),
                          Tuple{Symbol,Any,Any,Any,Float64,Symbol,Any}}[]
     for spin in (:up, :down)
-        χ = _inserted_state(x, spin, 1; ψ, imp_up, imp_down, expand, D = expand_D)
+        χ = _inserted_state(x, spin, 1; ψ, imp_up, imp_down)
         if χ !== nothing
             push!(inserts, (kind = :gt, weights = χ.weights, comps = χ.comps,
                             caches = Any[environments(h, c) for c in χ.comps],
                             sign = χ.phase * ψ.phase, spin = spin, qeta = (imp_up, imp_down)))
         end
-        η = _inserted_state(x, spin, -1; ψ, imp_up, imp_down, expand, D = expand_D)
+        η = _inserted_state(x, spin, -1; ψ, imp_up, imp_down)
         if η !== nothing
             # η's impurity occupations are the annihilated ones
             qeta = spin === :up ? (imp_up - 1, imp_down) : (imp_up, imp_down - 1)
@@ -217,63 +201,13 @@ function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real
         end
     end
 
-    # sparse-evolution warm-up (WI/WII, Zaletel 1407.1832): the sharp fiducial
-    # cannot seed the far-pair amplitudes under two-site TDVP, but the sparse
-    # exponential acts on the full chain — WARMUP_STEPS applications at
-    # δt/WARMUP_STEPS cover the FIRST coarse step and populate the amplitudes,
-    # after which the (compressed) chains hand over to the TDVP sweeps. Samples
-    # with n = 0 (t = 0) are evaluated on the un-warmed initial state.
-    prev = 0
-    warmed = false
-    function _warmup!()
-        δw = δt / warmup_steps
-        algW = warmup === :WI ? DMRG.WI() : DMRG.WII(tol = 1.0e-12, maxiter = 10_000)
-        Wm = MPO(timeevompo(h, -im * δw, algW))
-        wt = truncdimcutoff(D = 256, ϵ = 1.0e-12, add_back = 0)
-        algc = Orthogonalize(alg = SVD(), trunc = wt)
-        for _ in 1:warmup_steps
-            for (j, c) in enumerate(ψ.comps)
-                c2 = Wm * c
-                canonicalize!(c2, alg = algc)
-                ψ.comps[j] = c2
-            end
-            for ins in inserts, (j, c) in enumerate(ins.comps)
-                c2 = Wm * c
-                canonicalize!(c2, alg = algc)
-                ins.comps[j] = c2
-            end
-            foreach((j, c) -> ψcaches[j] = environments(h, c), eachindex(ψcaches), ψ.comps)
-            for ins in inserts
-                foreach((j, c) -> ins.caches[j] = environments(h, c),
-                        eachindex(ins.caches), ins.comps)
-            end
-        end
-        return 1
-    end
-
-    # the expanded chains carry one bond slot per configuration/direction channel:
-    # the truncation cap must cover them (cutting one leg of a ± pair would
-    # change the state), while unneeded directions are truncated away as they
-    # stay unpopulated
-    if trunc === nothing
-        Dins = 0
-        for ins in inserts, c in ins.comps
-            Dins = max(Dins, _maxbond(c))
-        end
-        D0 = expand ? max(TRUNC_EXPANDED.D, maximum(_maxbond, ψ.comps), Dins) : 256
-        efftrunc = truncdimcutoff(D = D0, ϵ = 1.0e-10, add_back = expand ? 0 : MIND)
-    else
-        efftrunc = trunc
-    end
+    efftrunc = trunc === nothing ? truncdimcutoff(D = 256, ϵ = 1.0e-10, add_back = MIND) : trunc
     alg = _tdvp2(δt, efftrunc)
 
     gt = zeros(ComplexF64, length(times))
     lt = zeros(ComplexF64, length(times))
+    prev = 0
     for (i, n) in enumerate(steps)
-        if !warmed && warmup !== :none && n ≥ 1
-            prev = _warmup!()       # the sparse warm-up covers the first coarse step
-            warmed = true
-        end
         for _ in (prev + 1):n
             foreach(c -> sweep!(c, alg), ψcaches)
             foreach(ins -> foreach(c -> sweep!(c, alg), ins.caches), inserts)
@@ -309,12 +243,10 @@ function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real
 end
 
 "insertion d^delta_σ|ψ₀⟩ of the fiducial state; nothing when the insertion annihilates it.
-The non-expand route shifts each fiducial component mechanically (exact per-configuration
-Jordan–Wigner strings), the expand route additionally overlays the far-pair ± seeding
-directions under the bond budget `D` (see `expanded_fiducial`)."
+Each fiducial component is shifted mechanically (exact per-configuration
+Jordan–Wigner strings)."
 function _inserted_state(x::Union{SISBD,SIDBD}, spin::Symbol, delta::Int;
-                         ψ::SectorSumState, imp_up::Int = 0, imp_down::Int = 0,
-                         expand::Bool = false, D::Int = EXPANDED_DBUDGET)
+                         ψ::SectorSumState, imp_up::Int = 0, imp_down::Int = 0)
     q_in = (imp_up, imp_down)
     q_out = spin === :up ? (q_in[1] + delta, q_in[2]) : (q_in[1], q_in[2] + delta)
     ((0 <= q_out[1] <= 1) && (0 <= q_out[2] <= 1)) || return nothing
@@ -322,12 +254,6 @@ function _inserted_state(x::Union{SISBD,SIDBD}, spin::Symbol, delta::Int;
     amp = _amplitude(tbl, q_out, q_in)
     amp === nothing && return nothing
     q_d = q_out .- q_in
-    if expand
-        return _expanded_inserted(x, ψ, spin, delta; imp_up, imp_down, D)
-    end
     comps = [_apply_dag(x, c, spin, delta; imp_up, imp_down) for c in ψ.comps]
     return SectorSumState(comps, copy(ψ.weights), [q .+ q_d for q in ψ.charges], ψ.phase)
 end
-
-"largest internal bond dimension of an MPS"
-_maxbond(ψ::DMRG.MPS) = maximum(dim(space(ψ.data[i], 3)) for i in 1:(length(ψ) - 1))

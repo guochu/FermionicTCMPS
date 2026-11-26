@@ -14,24 +14,6 @@
 
 const MIND = 10   # minimum bond dimension kept for the projection directions
 
-# Truncation for equivalently expanded initial states: the expansion directions
-# acquire physical weight at O(δt·v) from the first step, so neither the KS MinD
-# crutch nor a large bond cap is needed — discarded (zero-amplitude) directions
-# are simply truncated away.
-const TRUNC_EXPANDED = truncdimcutoff(D = 10, ϵ = 1.0e-10, add_back = 0)
-
-# Bond-dimension budget of the equivalent initial-state expansion: two slots per
-# admitted far-pair direction on top of the base channel's intrinsic charge
-# branches. The directions are admitted best-first over their coupling strength,
-# so the cap bounds the expansion polynomially (the states themselves stay exact).
-# Slot floor of the seeding breadth: at least EXPANDED_MIN_DIR direction slots
-# (± pairs over the direction descriptors) are admitted even when the bond
-# budget D is exhausted by the base channel's intrinsic charge branches (large
-# K), so the tangent space keeps its far-pair generators at O(K) extra slots.
-const EXPANDED_MIN_DIR = 64
-
-const EXPANDED_DBUDGET = 160
-
 function _tdvp2(δt::Real, trunc::DMRG.TruncationDimCutoff)
     return TDVP2(stepsize = -im * δt, ishermitian = true, trunc = trunc)
 end

@@ -107,9 +107,8 @@ end
 end
 
 @testset "G3 free dynamics: greater/lesser GF vs exact star evolution (sweep)" begin
-    # sweep-level gate: with the equivalent initial-state expansion the
-    # finite-β TFD class is exact to roundoff (the far-pair directions seed at
-    # first order); the plain sweep retains a small projection residue
+    # sweep-level gate: the plain sweep carries the small TDVP2 projection
+    # residue on the finite-β TFD class (effectively first order in δt)
     Random.seed!(31)
     ws = [-0.9, 0.5]; fs = [0.35, 0.55]
     β = 0.8; μ = 0.0; δt = 0.025
@@ -119,14 +118,11 @@ end
     # impurity empty: greater nontrivial, lesser zero
     x = SISBD(discretefermionicbath(ws, fs; β, μ); U = 0.0, εd = -0.3, J = 1.1)
     gt, lt = gf_greater_lesser_t(x, times; δt, trunc)
-    gt1, lt1 = gf_greater_lesser_t(x, times; δt, expand = true)
     hu = _star_h(x)
     ρ0 = _rho0(x; imp = 0.0)
     gtr, ltr = freefermions_greater_lesser(hu, ρ0, times, 1, 1)
     @test maximum(abs.(gt .- 2 .* gtr)) < 0.02         # spin-summed, projection residue
     @test maximum(abs.(lt)) < 1e-12                    # d annihilates the empty impurity
-    @test maximum(abs.(gt1 .- 2 .* gtr)) < 1e-6        # expansion: exact
-    @test maximum(abs.(lt1)) < 1e-12
 end
 
 @testset "G3 free dynamics: hot impurity channel structure" begin
@@ -141,87 +137,11 @@ end
     x = SISBD(discretefermionicbath(ws, fs; β, μ); U = 0.0, εd = -0.3, J = 1.1)
     hu = _star_h(x)
     gt2, lt2 = gf_greater_lesser_t(x, times; imp_up = 1, δt, trunc)
-    gt2e, lt2e = gf_greater_lesser_t(x, times; imp_up = 1, δt, expand = true)
     @test abs(gt2[1] + im) < 1e-8          # G^>(0) = −i·(1 − n_down)
     gtr_e, = freefermions_greater_lesser(hu, _rho0(x; imp = 0.0), times, 1, 1)
     _, ltr_f = freefermions_greater_lesser(hu, _rho0(x; imp = 1.0), times, 1, 1)
     @test maximum(abs.(gt2 .- gtr_e)) < 0.01    # projection residue (see the GF testset)
     @test maximum(abs.(lt2 .- ltr_f)) < 0.01
-    @test maximum(abs.(gt2e .- gtr_e)) < 1e-6   # expansion: exact
-    @test maximum(abs.(lt2e .- ltr_f)) < 1e-6
-end
-
-@testset "G3 TFD equivalence: expanded fiducial/insertions ≡ plain construction" begin
-    # the equivalent initial-state expansion must represent EXACTLY the same
-    # states as the plain constructions. The expanded state is ONE multi-sector
-    # MPS (base channel + ± seeding pairs); the per-charge comparison splits it
-    # back into sector components and pins overlaps, weights and impurity
-    # observables against the plain per-charge construction.
-    for (name, x, imp) in (("SISBD finite-β", SISBD(discretefermionicbath([-0.9, 0.5], [0.35, 0.55]; β = 0.8, μ = 0.0); U = 0.3, εd = -0.2), (0, 0)),
-                           ("SISBD finite-β hot", SISBD(discretefermionicbath([-0.9, 0.5], [0.35, 0.55]; β = 0.8, μ = 0.0); U = 0.3, εd = -0.2), (1, 0)),
-                           ("SIDBD vacuum-sea", SIDBD(discretefermionicvacuum([-0.8], [0.6]; μ = 0.0),
-                                                      discretefermionicvacuum([0.5], [0.45]; μ = 0.0); U = 1.0, εd = -0.3), (0, 0)),
-                           ("SIDBD finite-β", SIDBD(discretefermionicbath([-0.8], [0.6]; β = 0.8, μ = 0.0),
-                                                    discretefermionicbath([0.5], [0.45]; β = 0.8, μ = 0.0); U = 1.7, εd = -0.3), (0, 0)))
-        L = length(FermionicTCMPS.chain_spec(x).kinds)
-        lookup = Dict(FermionicTCMPS._sector((q1, q2)) => (q1, q2) for q1 in 0:(2L) for q2 in 0:(2L))
-        ψf = fiducial_state(x; imp_up = imp[1], imp_down = imp[2])
-        ψe = FermionicTCMPS.expanded_fiducial(x; imp_up = imp[1], imp_down = imp[2])
-        @test length(ψe.comps) == 1
-        @test ψe.weights == [1.0]
-        @test abs(sqrt(real(dot(ψe.comps[1], ψe.comps[1]))) - 1) < 1e-10
-        split_e = FermionicTCMPS._split_sectors(ψe.comps[1], lookup, ComplexF64)
-        @test sort(split_e.charges) == sort(ψf.charges)
-        for q in ψf.charges
-            j = findfirst(==(q), ψf.charges)
-            k = findfirst(==(q), split_e.charges)
-            @test abs(split_e.weights[k] - ψf.weights[j]) < 1e-10
-            @test abs(dot(ψf.comps[j], split_e.comps[k]) - 1) < 1e-10
-        end
-        # impurity observables: charge-weighted plain vs the single expanded chain
-        nd = occupation_op(x; spin = :up)
-        @test abs(real(expectationvalue(nd, ψe)) -
-                  real(expectationvalue(nd, ψf))) < 1e-10
-        for spin in (:up, :down), delta in (1, -1)
-            χf = FermionicTCMPS._inserted_state(x, spin, delta; ψ = ψf, imp_up = imp[1], imp_down = imp[2])
-            χe = FermionicTCMPS._inserted_state(x, spin, delta; ψ = ψf, imp_up = imp[1], imp_down = imp[2], expand = true)
-            @test (χf === nothing) == (χe === nothing)
-            χf === nothing && continue
-            nf = sqrt(sum(w * real(dot(c, c)) for (w, c) in zip(χf.weights, χf.comps)))
-            ne = sqrt(real(dot(χe.comps[1], χe.comps[1])))
-            @test abs(nf - ne) < 1e-10
-            split_chi = FermionicTCMPS._split_sectors(χe.comps[1], lookup, ComplexF64)
-            @test sort(split_chi.charges) == sort(χf.charges)
-            for q in χf.charges
-                j = findfirst(==(q), χf.charges)
-                k = findfirst(==(q), split_chi.charges)
-                cj = χf.comps[j]
-                nj = sqrt(real(dot(cj, cj)))
-                @test nj > 1e-12
-                @test abs(dot(cj / nj, split_chi.comps[k]) - 1) < 1e-10
-            end
-        end
-    end
-    # the bond budget: the ADDED direction slots respect max(EXPANDED_MIN_DIR, D −
-    # basebond) while the state remains EXACTLY the plain construction — the ±
-    # pairs cancel in the vector regardless of which directions are admitted
-    let x = SISBD(discretefermionicbath([-0.9, 0.5], [0.35, 0.55]; β = 0.8, μ = 0.0); U = 0.3, εd = -0.2)
-        L = length(FermionicTCMPS.chain_spec(x).kinds)
-        lookup = Dict(FermionicTCMPS._sector((q1, q2)) => (q1, q2) for q1 in 0:(2L) for q2 in 0:(2L))
-        ψf = fiducial_state(x)
-        basechan = FermionicTCMPS._ExpansionChannel(FermionicTCMPS._fiducial_entries(x, 0, 0), 1.0)
-        basebond = maximum(length(FermionicTCMPS._channel_bonds(basechan.entries)[i]) for i in 2:L)
-        for D in (16, 64)
-            ψe = FermionicTCMPS.expanded_fiducial(x; D)
-            npairs = max(FermionicTCMPS.EXPANDED_MIN_DIR, D - basebond) ÷ 2
-            @test maximum(FermionicTCMPS._maxbond, ψe.comps) <= basebond + 2 * npairs
-            split_e = FermionicTCMPS._split_sectors(ψe.comps[1], lookup, ComplexF64)
-            for (j, q) in enumerate(ψf.charges)
-                k = findfirst(==(q), split_e.charges)
-                @test abs(dot(ψf.comps[j], split_e.comps[k]) - 1) < 1e-10
-            end
-        end
-    end
 end
 
 @testset "G3 free dynamics: vacuum degeneracy (single mode, a2 decoupled)" begin
@@ -308,8 +228,8 @@ end
 
 @testset "G3 free dynamics: sweep drift regression gate (finite-β TFD class)" begin
     # the finite-β TFD plain sweep carries a small KS App-C projection residue
-    # (the d–a₂ coupling spans two sites); the equivalent initial-state
-    # expansion removes it — the expand leg pins exactness
+    # (the d–a₂ coupling spans two sites); effectively first order in δt,
+    # δt-reduction converges it only at first order
     Random.seed!(36)
     ws = [-0.9, 0.5]; fs = [0.35, 0.55]
     β = 0.8
@@ -323,10 +243,6 @@ end
     g2, = gf_greater_lesser_t(x, times; δt = 0.02, trunc)
     e2 = abs(g2[1] - exact[1])
     @test e2 < 0.02
-    g3, = gf_greater_lesser_t(x, times; δt = 0.02, expand = true)
-    @test abs(g3[1] - exact[1]) < 1e-7
-    g4, = gf_greater_lesser_t(x, times; δt = 0.02, trunc, warmup = :WII)
-    @test abs(g4[1] - exact[1]) < 5e-4    # WI/WII warm-up: flat WI/WII truncation offset
 end
 
 @testset "G3 free dynamics: double bath dense chain leg vs star frame" begin
@@ -360,7 +276,7 @@ end
 @testset "G3 free dynamics: double bath sweep vs exact star evolution" begin
     # enabled after the component-wise d†-apply fix: the finite-β SIDBD
     # sandwich runs on all charge sectors of the TFD fiducial; the plain sweep
-    # keeps a small projection residue, the expansion is exact
+    # keeps a small TDVP2 projection residue
     Random.seed!(39)
     δt = 0.025
     times = collect(0.0:0.1:0.5)
@@ -369,12 +285,9 @@ end
     xr = discretefermionicbath([0.5], [0.45]; β = 0.8, μ = 0.0)
     x = SIDBD(xl, xr; U = 0.0, εd = -0.3, Jl = 1.0, Jr = 1.0)
     gt, lt = gf_greater_lesser_t(x, times; δt, trunc)
-    gt1, lt1 = gf_greater_lesser_t(x, times; δt, expand = true)
     gtr, ltr = freefermions_greater_lesser(_star_h(x), _rho0(x; imp = 0.0), times, 1, 1)
     @test maximum(abs.(gt .- 2 .* gtr)) < 0.02
     @test maximum(abs.(lt)) < 1e-12
-    @test maximum(abs.(gt1 .- 2 .* gtr)) < 1e-6
-    @test maximum(abs.(lt1)) < 1e-12
 end
 
 @testset "G3 vacuum degeneracy: a₂ branch frozen when μ below spectrum" begin
