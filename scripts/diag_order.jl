@@ -1,7 +1,15 @@
 # Order analysis of the double-bath sweep error: is the TDVP2 trajectory O(dt)?
-# Discriminators: (i) error vs dt; (ii) fresh-cache-per-step vs incremental cache
-# (detects environment staleness); (iii) raw overlap <chi|chi(t)> against the
-# exact_timeevolution/dense reference.
+# ⚠️ BROKEN probe — do not quote its numbers. Two independent defects:
+#   1. the evolved chain `_shifted_state` is the sharp VACUUM product chain,
+#      while the reference χv is the finite-β thermofield-double insertion —
+#      different initial states, so the "error" is dominated by the mismatch
+#      (measured: 0.19/0.30/0.44 at t=0.3/0.5/1.0, flat in δt);
+#   2. `copy(χ0m)` shares the site tensors with the evolved MPS (sweep! replaces
+#      .data entries in place), so the raw overlap needs a deepcopy snapshot of
+#      the initial state.
+# The corrected probe is scripts/diag_order_plain.jl (proper per-component
+# thermofield insertion + deepcopy snapshot): err 2.7e-4/3.9e-4/4.0e-4 at
+# t=0.3/0.5/1.0, δt-independent (projection floor, not Trotter).
 using Random, LinearAlgebra
 using TensorKit, DMRG, FermionicTCMPS
 using ImpurityModelBase: discretefermionicbath
