@@ -84,7 +84,6 @@ const _parity = table(
 )
 const _n_up = table((P_UP, P_UP) => 1.0, (P_FULL, P_FULL) => 1.0)
 const _n_down = table((P_DOWN, P_DOWN) => 1.0, (P_FULL, P_FULL) => 1.0)
-const _nn = table((P_FULL, P_FULL) => 1.0)
 
 # All chain sites (impurity, a₁ and a₂ branch alike) use the particle-label
 # tables below: the a₂ branch represents the f̂₂ fermions directly (the

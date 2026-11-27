@@ -40,31 +40,6 @@ function _amplitude(t::OpTable, q_out::Charge, q_in::Charge)
     return idx === nothing ? nothing : t[idx].second
 end
 
-"""
-    _shifted_state(x, imp_up, imp_down, spin, delta)
-
-Impurity insertion d^delta_σ |imp⟩ as a product MPS of the vacuum-fiducial chain
-(bond dimensions unchanged, total charge shifted), with the intra-site phase
-taken from the operator table. Returns `nothing` when the insertion annihilates
-the state.
-"""
-function _shifted_state(x::Union{SISBD,SIDBD}, imp_up::Int, imp_down::Int, spin::Symbol, delta::Int)
-    q_in = (imp_up, imp_down)
-    q_out = spin === :up ? (q_in[1] + delta, q_in[2]) : (q_in[1], q_in[2] + delta)
-    tbl = if spin === :up
-        delta == 1 ? _adag_up : _a_up
-    else
-        delta == 1 ? _adag_down : _a_down
-    end
-    amp = _amplitude(tbl, q_out, q_in)
-    amp === nothing && return nothing
-    spec = chain_spec(x)
-    sectors = [_sector(k == spec.imp_site ? q_out : (0, 0)) for k in 1:length(spec.kinds)]
-    ψ = prodmps(ComplexF64, spec.spaces, sectors)
-    ψ[spec.imp_site] = amp * ψ[spec.imp_site]
-    return _widen_svectors(ψ)
-end
-
 # ⟨ψ|d_σ|χ⟩ evaluated as ⟨d†ψ|χ⟩: apply the impurity creation mechanically to the
 # ket (impurity tensor rebuilt, every downstream bond sector shifted by the operator
 # charge), then a same-charge dot. This sidesteps the bridging-charge three-way
@@ -178,8 +153,6 @@ function gf_greater_lesser_t(x::Union{SISBD,SIDBD}, times::AbstractVector{<:Real
 
     spec = chain_spec(x)
     ψ = fiducial_state(x; imp_up, imp_down)
-    dmpo = Dict(:up => site_operator_mpo(spec.spaces, spec.imp_site, _a_up),
-                :down => site_operator_mpo(spec.spaces, spec.imp_site, _a_down))
 
     ψcaches = Any[environments(h, c) for c in ψ.comps]   # sweep! mutates ψ.comps in place
     inserts = NamedTuple{(:kind, :weights, :comps, :caches, :sign, :spin, :qeta),

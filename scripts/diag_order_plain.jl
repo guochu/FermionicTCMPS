@@ -1,8 +1,10 @@
 # Plain-route raw-trajectory accuracy probe, CORRECTED insertion side. The
-# older scripts/diag_order.jl evolves `_shifted_state` — the sharp VACUUM
-# product chain — against a finite-β TFD insertion reference; the two initial
-# states differ, so its "error" is dominated by the initial-state mismatch,
-# not the sweep. Here both sides use the thermofield-double insertion:
+# older (removed) diag_order.jl / diag_onestep.jl probes evolved `_shifted_state`
+# — the sharp VACUUM product chain — against a finite-β TFD insertion reference;
+# the two initial states differ, so their "error" was dominated by the
+# initial-state mismatch, not the sweep (and a shallow `copy` shares tensors
+# with the in-place sweep, so the raw overlap needs a deepcopy snapshot).
+# Here both sides use the thermofield-double insertion:
 #
 #   sweep side: χ = _inserted_state(x, :up, 1; ψ = fiducial_state(x)) (the exact
 #   per-component mechanical d†-apply the GF pipeline itself uses), evolved with
